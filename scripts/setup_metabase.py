@@ -435,7 +435,10 @@ def main():
     print("  Adding cards to dashboard …")
     dashcards = dashboard_layout(card_name_to_id)
     for dc in dashcards:
-        mb.post(f"/api/dashboard/{dash_id}/cards", json=dc)
+        try:
+            mb.post(f"/api/dashboard/{dash_id}/dashcards", json=dc)
+        except Exception:
+            mb.post(f"/api/dashboard/{dash_id}/cards", json=dc)
     print(f"  Added {len(dashcards)} cards.")
 
     print(f"\nDone!  Open: {args.host}/dashboard/{dash_id}")
