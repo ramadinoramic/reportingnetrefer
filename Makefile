@@ -1,4 +1,4 @@
-.PHONY: setup up down logs db-shell load load-dir board-report
+.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard
 
 PYTHON := $(shell command -v python3 || command -v python)
 
@@ -43,3 +43,12 @@ board-report:
 		$(if $(FROM),--from $(FROM),) \
 		$(if $(TO),--to $(TO),) \
 		$(if $(OUTPUT),--output $(OUTPUT),)
+
+# Create / update the Board Report dashboard in Metabase
+# Usage: make board-dashboard USER=admin@example.com PASSWORD=secret
+board-dashboard:
+	$(PYTHON) scripts/setup_board_dashboard.py \
+		--host $(or $(HOST),http://localhost:3000) \
+		--user $(USER) \
+		--password $(PASSWORD) \
+		$(if $(DB_NAME),--db-name $(DB_NAME),)
