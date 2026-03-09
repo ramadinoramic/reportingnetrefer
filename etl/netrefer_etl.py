@@ -328,9 +328,19 @@ def date_from_filename(path: Path) -> Optional[date]:
 # ---------------------------------------------------------------------------
 # File helpers
 # ---------------------------------------------------------------------------
+def _read_file(file_path: Path) -> str:
+    """Read file trying UTF-8 (with BOM), then UTF-16 (Excel exports)."""
+    for enc in ("utf-8-sig", "utf-16"):
+        try:
+            return file_path.read_text(encoding=enc)
+        except UnicodeDecodeError:
+            continue
+    return file_path.read_text(encoding="latin-1")  # last resort
+
+
 def process_file(file_path: Path, report_date: date, col_map: Dict[str, str]) -> int:
     log.info("Loading: %s (date: %s)", file_path.name, report_date)
-    raw = file_path.read_text(encoding="utf-8-sig")  # handles BOM
+    raw = _read_file(file_path)
     rows = parse_csv(raw, col_map, report_date)
     records = transform(rows)
     count = load_to_mysql(records, source=file_path.name)
