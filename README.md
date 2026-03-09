@@ -1,105 +1,96 @@
 # Netrefer → MySQL → Looker Automation
 
-Automated pipeline that ingests Netrefer affiliate reports into MySQL and exposes them as a Looker explore.
+Automates loading Netrefer affiliate CSV exports into MySQL, ready for Looker.
 
-## Architecture
+## How it works
 
 ```
-Netrefer (API or CSV export)
-        │
+Netrefer export (CSV)
+        │  save as netrefer_YYYY-MM-DD.csv
+        │  drop into ./drop/
         ▼
   etl/netrefer_etl.py   ←── etl/column_map.yaml
-        │
+        │  reads date from filename
+        │  skips sep= line, blank rows, totals row
         ▼
   MySQL: netrefer_stats  ──► v_netrefer_daily (view)
         │
         ▼
-  Looker (LookML model + view)
-        │
-        ▼
-  Dashboards / Explores
+  Looker explore (LookML)
 ```
 
-## Quick Start
+---
 
-### 1. Environment setup
+## Setup (one time)
 
+**1. Install dependencies**
 ```bash
-cp .env.example .env
-# Edit .env with your MySQL credentials and (optionally) Netrefer API key
 pip install -r requirements.txt
 ```
 
-### 2. Create the MySQL schema
+**2. Configure database credentials**
+```bash
+cp .env.example .env
+# Fill in MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE
+```
 
+**3. Create the MySQL table**
 ```bash
 make db-init
-# or: mysql -h HOST -u USER -pPASS < sql/schema.sql
 ```
 
-### 3. Load data
+**4. Connect Looker**
+- Looker Admin → Connections → New → MySQL, name it **`netrefer_mysql`**
+- Copy the `looker/` folder into your LookML project and deploy
 
-**Option A – Drop CSV files** (no API key required):
+---
 
-```bash
-# Single file
-make etl-csv FILE=/path/to/netrefer_report.csv
+## Daily workflow
 
-# All CSVs in a folder
-make etl-dir DIR=/path/to/csv_exports/
-```
+1. Download your report from Netrefer
+2. **Rename the file** to include the period date, e.g.:
+   ```
+   netrefer_2024-01-31.csv
+   ```
+3. Drop it into the `./drop/` folder
+4. Run:
+   ```bash
+   make load-dir
+   ```
 
-**Option B – Netrefer API** (requires `NETREFER_API_KEY` in `.env`):
+That's it. Processed files are automatically moved to `./drop/processed/`.
 
-```bash
-make etl-api START=2024-01-01 END=2024-01-31
-```
+---
 
-**Option C – Daily scheduled run** (fetches yesterday automatically at 06:00):
+## File naming convention
 
-```bash
-make run-scheduler
-```
+The date in the filename tells the script which period the data belongs to
+(since Netrefer CSVs don't have a date column).
 
-### 4. Connect Looker
-
-1. In Looker Admin → **Connections**, create a new MySQL connection named **`netrefer_mysql`** pointing to your database.
-2. Copy the `looker/` folder into your LookML project.
-3. Deploy and navigate to **Explore → Affiliate Stats**.
-
-## Column Mapping
-
-Edit `etl/column_map.yaml` to match your Netrefer CSV headers.
-The YAML maps raw CSV column names to MySQL column names.
-No code changes needed when Netrefer changes their export format.
-
-## MySQL Schema
-
-| Column | Type | Notes |
-|---|---|---|
-| `report_date` | DATE | Grain key |
-| `affiliate_id` | VARCHAR | Grain key |
-| `campaign_id` | VARCHAR | Grain key |
-| `brand` | VARCHAR | Grain key |
-| `country` | VARCHAR | Grain key |
-| `clicks` | INT | |
-| `registrations` | INT | |
-| `first_depositors` | INT | FTDs |
-| `net_revenue_cents` | BIGINT | Stored × 100 to avoid float issues |
-| `commission_cents` | BIGINT | Stored × 100 |
-
-The view `v_netrefer_daily` exposes currency columns divided back to decimals for Looker.
-
-## Looker Measures Available
-
-| Measure | Description |
+| Filename | Detected date |
 |---|---|
-| Impressions / Clicks | Traffic volume |
-| CTR | Clicks / Impressions |
-| Registrations | Sign-ups |
-| First Time Depositors | FTDs |
-| Click → Reg Rate | Conversion funnel step 1 |
-| Reg → FTD Rate | Conversion funnel step 2 |
-| Net Revenue / Gross Revenue | Revenue metrics |
-| Commission | Affiliate payout |
-| Avg Revenue / FTD | Revenue efficiency |
+| `netrefer_2024-01-31.csv` | 2024-01-31 |
+| `report_2024-01-31.csv` | 2024-01-31 |
+| `january_2024-01-01.csv` | 2024-01-01 |
+
+Any filename containing `YYYY-MM-DD` anywhere works.
+
+---
+
+## Column mapping
+
+If Netrefer ever changes their export headers, edit `etl/column_map.yaml`.
+No code changes needed — just add or update the mapping there.
+
+---
+
+## Looker measures available
+
+| Category | Measures |
+|---|---|
+| Traffic | Views, Unique Views, Clicks, Unique Clicks |
+| Conversions | Signups, Depositing Customers, FTDs, Active Customers |
+| Conversion rates | Click→Signup, Signup→FTD |
+| Financials | Deposits, Turnover, Gross Revenue, Net Revenue, Bonuses, Chargebacks |
+| Rewards | Revenue Share, CPA, Sub-Affiliate, Total Reward |
+| KPIs | Net Revenue / FTD, Reward / FTD |
