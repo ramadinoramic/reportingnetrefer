@@ -1,0 +1,45 @@
+# Maps raw Netrefer CSV column names → MySQL column names.
+# Add/rename entries here if your Netrefer export uses different headers.
+# Values are the MySQL target column names.
+
+column_map:
+  # Date
+  "Date":                    report_date
+  "Report Date":             report_date
+
+  # Affiliate
+  "Affiliate ID":            affiliate_id
+  "AffiliateID":             affiliate_id
+  "Affiliate Name":          affiliate_name
+  "AffiliateName":           affiliate_name
+
+  # Campaign
+  "Campaign ID":             campaign_id
+  "CampaignID":              campaign_id
+  "Campaign Name":           campaign_name
+  "CampaignName":            campaign_name
+
+  # Grouping
+  "Brand":                   brand
+  "Country":                 country
+  "Media Type":              media_type
+  "MediaType":               media_type
+
+  # Traffic
+  "Impressions":             impressions
+  "Clicks":                  clicks
+
+  # Conversions
+  "Registrations":           registrations
+  "First Time Depositors":   first_depositors
+  "FTDs":                    first_depositors
+  "Total Depositors":        total_depositors
+
+  # Financials (raw values in base currency; script converts to cents)
+  "Deposits":                deposits
+  "Net Revenue":             net_revenue
+  "NetRevenue":              net_revenue
+  "Gross Revenue":           gross_revenue
+  "GrossRevenue":            gross_revenue
+  "Chargebacks":             chargebacks
+  "Commission":              commission
