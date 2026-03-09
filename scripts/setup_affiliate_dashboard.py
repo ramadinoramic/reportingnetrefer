@@ -111,6 +111,15 @@ def configure_field_for_dropdown(mb, field_id):
     print(f"  Field {field_id}: has_field_values=list, rescan triggered.")
 
 
+def configure_date_field(mb, field_id):
+    """Ensure Metabase treats this field as a Date so date field-filters work."""
+    try:
+        mb.put(f"/api/field/{field_id}", json={"base_type": "type/Date"})
+        print(f"  Field {field_id}: base_type set to type/Date.")
+    except Exception as e:
+        print(f"  [warn] Could not set base_type for field {field_id}: {e}")
+
+
 def db_engine(mb, db_id):
     """Return the lowercase engine string for the database (e.g. 'postgres', 'mysql', 'h2')."""
     try:
@@ -126,6 +135,8 @@ def last_7_days_expr(engine):
         return "date('now', '-7 days')"
     if engine in ("mysql", "mariadb"):
         return "DATE_SUB(CURDATE(), INTERVAL 7 DAY)"
+    if engine in ("sqlserver",):
+        return "DATEADD(day, -7, CAST(GETDATE() AS DATE))"
     # postgres, redshift, snowflake, bigquery, etc.
     return "CURRENT_DATE - INTERVAL '7 days'"
 
@@ -409,13 +420,14 @@ def card_defs(db_id, affiliate_field_id, report_date_field_id, engine="postgres"
             """),
             "visualization_settings": {},
         },
-        # ── Daily detail table (consolidated per date, no campaign split) ─
+        # ── Daily detail table (consolidated per affiliate+date) ─────────
         {
             "name":    "AF – Daily Detail Table",
             "display": "table",
             "dataset_query": q(f"""
                 SELECT
                     report_date,
+                    affiliate_name,
                     SUM(clicks)                                     AS clicks,
                     SUM(registrations)                              AS signups,
                     SUM(first_depositors)                           AS ftds,
@@ -431,8 +443,8 @@ def card_defs(db_id, affiliate_field_id, report_date_field_id, engine="postgres"
                          ELSE 0
                     END                                             AS reg_to_ftd_pct
                 FROM netrefer_stats {WHERE}
-                GROUP BY report_date
-                ORDER BY report_date DESC
+                GROUP BY report_date, affiliate_name
+                ORDER BY report_date DESC, net_revenue DESC
             """),
             "visualization_settings": {},
         },
@@ -505,8 +517,10 @@ def main():
     affiliate_field_id   = find_field_id(mb, db_id, "netrefer_stats", "affiliate_name")
     report_date_field_id = find_field_id(mb, db_id, "netrefer_stats", "report_date")
     configure_field_for_dropdown(mb, affiliate_field_id)
+    configure_date_field(mb, report_date_field_id)
     engine = db_engine(mb, db_id)
-    print(f"  DB engine: {engine}")
+    seven_days_sql = last_7_days_expr(engine)
+    print(f"  DB engine: {engine}  →  last-7-days expr: {seven_days_sql}")
 
     # Upsert all cards (always PUT existing ones so SQL + template-tags stay current)
     existing = existing_cards(mb)
