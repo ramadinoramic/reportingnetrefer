@@ -1,45 +1,52 @@
-# Maps raw Netrefer CSV column names → MySQL column names.
-# Add/rename entries here if your Netrefer export uses different headers.
-# Values are the MySQL target column names.
+# Maps Netrefer CSV column headers → MySQL column names.
+# Handles the sep= header and blank rows automatically in the parser.
 
 column_map:
-  # Date
-  "Date":                    report_date
-  "Report Date":             report_date
+  # Affiliate identity
+  "Affiliate ID":                     affiliate_id
+  "Affiliate Name":                   affiliate_name
+  "Affiliate Email":                  affiliate_email
+  "Affiliate Status":                 affiliate_status
+  "Affiliate Signup Date":            affiliate_signup_date
 
-  # Affiliate
-  "Affiliate ID":            affiliate_id
-  "AffiliateID":             affiliate_id
-  "Affiliate Name":          affiliate_name
-  "AffiliateName":           affiliate_name
-
-  # Campaign
-  "Campaign ID":             campaign_id
-  "CampaignID":              campaign_id
-  "Campaign Name":           campaign_name
-  "CampaignName":            campaign_name
-
-  # Grouping
-  "Brand":                   brand
-  "Country":                 country
-  "Media Type":              media_type
-  "MediaType":               media_type
+  # Campaign / plan
+  "Default Marketing Source Name":    campaign_name
+  "Default Marketing Source Category": media_type
+  "Reward Plan ID":                   reward_plan_id
+  "Reward Plan":                      reward_plan
+  "Country":                          country
 
   # Traffic
-  "Impressions":             impressions
-  "Clicks":                  clicks
+  "Views":                            views
+  "Unique Views":                     unique_views
+  "Clicks":                           clicks
+  "Unique Clicks":                    unique_clicks
 
   # Conversions
-  "Registrations":           registrations
-  "First Time Depositors":   first_depositors
-  "FTDs":                    first_depositors
-  "Total Depositors":        total_depositors
+  "Customer Signups":                 registrations
+  "Depositing Customers":             depositing_customers
+  "Active Customers":                 active_customers
+  "New Depositing Customers":         new_depositing_customers
+  "New Active Customers":             new_active_customers
+  "First Time Depositing Customers":  first_depositors
+  "First Time Active Customers":      first_active_customers
+  "Transactions":                     transactions
 
-  # Financials (raw values in base currency; script converts to cents)
-  "Deposits":                deposits
-  "Net Revenue":             net_revenue
-  "NetRevenue":              net_revenue
-  "Gross Revenue":           gross_revenue
-  "GrossRevenue":            gross_revenue
-  "Chargebacks":             chargebacks
-  "Commission":              commission
+  # Financials
+  "Deposits":                         deposits
+  "Turnover":                         turnover
+  "Contributions":                    contributions
+  "Payouts":                          payouts
+  "Gross Revenue":                    gross_revenue
+  "Bonuses":                          bonuses
+  "Adj (General)":                    adj_general
+  "Adj (Chargebacks)":                chargebacks
+  "Net Revenue":                      net_revenue
+
+  # Rewards / commission
+  "Number Of Sub-Affiliates":         sub_affiliates
+  "Revenue Share Reward":             rev_share_reward
+  "CPA Reward":                       cpa_reward
+  "Sub-Affiliate Reward":             sub_affiliate_reward
+  "Other Rewards":                    other_rewards
+  "Total Reward":                     total_reward

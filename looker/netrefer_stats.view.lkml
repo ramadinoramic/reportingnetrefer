@@ -23,24 +23,43 @@ view: netrefer_stats {
     label: "Affiliate Name"
   }
 
-  # ── Campaign ────────────────────────────────────────────────────────────────
-  dimension: campaign_id {
+  dimension: affiliate_email {
     type: string
-    sql: ${TABLE}.campaign_id ;;
-    label: "Campaign ID"
+    sql: ${TABLE}.affiliate_email ;;
+    label: "Affiliate Email"
   }
 
+  dimension: affiliate_status {
+    type: string
+    sql: ${TABLE}.affiliate_status ;;
+    label: "Affiliate Status"
+  }
+
+  dimension_group: affiliate_signup {
+    type: time
+    timeframes: [date, month, year]
+    convert_tz: no
+    sql: ${TABLE}.affiliate_signup_date ;;
+    label: "Affiliate Signup"
+  }
+
+  # ── Campaign / Plan ──────────────────────────────────────────────────────────
   dimension: campaign_name {
     type: string
     sql: ${TABLE}.campaign_name ;;
-    label: "Campaign Name"
+    label: "Campaign"
   }
 
-  # ── Groupings ────────────────────────────────────────────────────────────────
-  dimension: brand {
+  dimension: media_type {
     type: string
-    sql: ${TABLE}.brand ;;
-    label: "Brand"
+    sql: ${TABLE}.media_type ;;
+    label: "Media Type"
+  }
+
+  dimension: reward_plan {
+    type: string
+    sql: ${TABLE}.reward_plan ;;
+    label: "Reward Plan"
   }
 
   dimension: country {
@@ -50,17 +69,18 @@ view: netrefer_stats {
     label: "Country"
   }
 
-  dimension: media_type {
-    type: string
-    sql: ${TABLE}.media_type ;;
-    label: "Media Type"
+  # ── Traffic Measures ─────────────────────────────────────────────────────────
+  measure: total_views {
+    type: sum
+    sql: ${TABLE}.views ;;
+    label: "Views"
+    value_format_name: decimal_0
   }
 
-  # ── Traffic Measures ─────────────────────────────────────────────────────────
-  measure: total_impressions {
+  measure: total_unique_views {
     type: sum
-    sql: ${TABLE}.impressions ;;
-    label: "Impressions"
+    sql: ${TABLE}.unique_views ;;
+    label: "Unique Views"
     value_format_name: decimal_0
   }
 
@@ -71,46 +91,82 @@ view: netrefer_stats {
     value_format_name: decimal_0
   }
 
-  measure: click_through_rate {
-    type: number
-    sql: NULLIF(${total_clicks}, 0) / NULLIF(${total_impressions}, 0) ;;
-    label: "CTR"
-    value_format_name: percent_2
+  measure: total_unique_clicks {
+    type: sum
+    sql: ${TABLE}.unique_clicks ;;
+    label: "Unique Clicks"
+    value_format_name: decimal_0
   }
 
   # ── Conversion Measures ──────────────────────────────────────────────────────
   measure: total_registrations {
     type: sum
     sql: ${TABLE}.registrations ;;
-    label: "Registrations"
+    label: "Customer Signups"
+    value_format_name: decimal_0
+  }
+
+  measure: total_depositing_customers {
+    type: sum
+    sql: ${TABLE}.depositing_customers ;;
+    label: "Depositing Customers"
+    value_format_name: decimal_0
+  }
+
+  measure: total_active_customers {
+    type: sum
+    sql: ${TABLE}.active_customers ;;
+    label: "Active Customers"
+    value_format_name: decimal_0
+  }
+
+  measure: total_new_depositing {
+    type: sum
+    sql: ${TABLE}.new_depositing_customers ;;
+    label: "New Depositing Customers"
+    value_format_name: decimal_0
+  }
+
+  measure: total_new_active {
+    type: sum
+    sql: ${TABLE}.new_active_customers ;;
+    label: "New Active Customers"
     value_format_name: decimal_0
   }
 
   measure: total_ftds {
     type: sum
     sql: ${TABLE}.first_depositors ;;
-    label: "First Time Depositors (FTDs)"
+    label: "First Time Depositing Customers"
     value_format_name: decimal_0
   }
 
-  measure: total_depositors {
+  measure: total_first_active {
     type: sum
-    sql: ${TABLE}.total_depositors ;;
-    label: "Total Depositors"
+    sql: ${TABLE}.first_active_customers ;;
+    label: "First Time Active Customers"
     value_format_name: decimal_0
   }
 
-  measure: click_to_registration_rate {
+  measure: total_transactions {
+    type: sum
+    sql: ${TABLE}.transactions ;;
+    label: "Transactions"
+    value_format_name: decimal_0
+  }
+
+  # ── Conversion Rates ─────────────────────────────────────────────────────────
+  measure: click_to_signup_rate {
     type: number
     sql: NULLIF(${total_registrations}, 0) / NULLIF(${total_clicks}, 0) ;;
-    label: "Click → Reg Rate"
+    label: "Click → Signup Rate"
     value_format_name: percent_2
   }
 
-  measure: registration_to_ftd_rate {
+  measure: signup_to_ftd_rate {
     type: number
     sql: NULLIF(${total_ftds}, 0) / NULLIF(${total_registrations}, 0) ;;
-    label: "Reg → FTD Rate"
+    label: "Signup → FTD Rate"
     value_format_name: percent_2
   }
 
@@ -118,14 +174,14 @@ view: netrefer_stats {
   measure: total_deposits {
     type: sum
     sql: ${TABLE}.deposits ;;
-    label: "Total Deposits"
+    label: "Deposits"
     value_format_name: usd
   }
 
-  measure: total_net_revenue {
+  measure: total_turnover {
     type: sum
-    sql: ${TABLE}.net_revenue ;;
-    label: "Net Revenue"
+    sql: ${TABLE}.turnover ;;
+    label: "Turnover"
     value_format_name: usd
   }
 
@@ -136,32 +192,96 @@ view: netrefer_stats {
     value_format_name: usd
   }
 
+  measure: total_bonuses {
+    type: sum
+    sql: ${TABLE}.bonuses ;;
+    label: "Bonuses"
+    value_format_name: usd
+  }
+
   measure: total_chargebacks {
     type: sum
     sql: ${TABLE}.chargebacks ;;
-    label: "Chargebacks"
+    label: "Adj (Chargebacks)"
     value_format_name: usd
   }
 
-  measure: total_commission {
+  measure: total_adj_general {
     type: sum
-    sql: ${TABLE}.commission ;;
-    label: "Commission"
+    sql: ${TABLE}.adj_general ;;
+    label: "Adj (General)"
     value_format_name: usd
   }
 
-  # ── Per-Affiliate Averages ───────────────────────────────────────────────────
-  measure: avg_revenue_per_ftd {
+  measure: total_net_revenue {
+    type: sum
+    sql: ${TABLE}.net_revenue ;;
+    label: "Net Revenue"
+    value_format_name: usd
+  }
+
+  measure: total_contributions {
+    type: sum
+    sql: ${TABLE}.contributions ;;
+    label: "Contributions"
+    value_format_name: usd
+  }
+
+  measure: total_payouts {
+    type: sum
+    sql: ${TABLE}.payouts ;;
+    label: "Payouts"
+    value_format_name: usd
+  }
+
+  # ── Reward Measures ──────────────────────────────────────────────────────────
+  measure: total_rev_share_reward {
+    type: sum
+    sql: ${TABLE}.rev_share_reward ;;
+    label: "Revenue Share Reward"
+    value_format_name: usd
+  }
+
+  measure: total_cpa_reward {
+    type: sum
+    sql: ${TABLE}.cpa_reward ;;
+    label: "CPA Reward"
+    value_format_name: usd
+  }
+
+  measure: total_sub_affiliate_reward {
+    type: sum
+    sql: ${TABLE}.sub_affiliate_reward ;;
+    label: "Sub-Affiliate Reward"
+    value_format_name: usd
+  }
+
+  measure: total_other_rewards {
+    type: sum
+    sql: ${TABLE}.other_rewards ;;
+    label: "Other Rewards"
+    value_format_name: usd
+  }
+
+  measure: total_reward {
+    type: sum
+    sql: ${TABLE}.total_reward ;;
+    label: "Total Reward"
+    value_format_name: usd
+  }
+
+  # ── Efficiency KPIs ──────────────────────────────────────────────────────────
+  measure: net_revenue_per_ftd {
     type: number
     sql: NULLIF(${total_net_revenue}, 0) / NULLIF(${total_ftds}, 0) ;;
-    label: "Avg Revenue / FTD"
+    label: "Net Revenue / FTD"
     value_format_name: usd
   }
 
-  measure: avg_commission_per_ftd {
+  measure: reward_per_ftd {
     type: number
-    sql: NULLIF(${total_commission}, 0) / NULLIF(${total_ftds}, 0) ;;
-    label: "Avg Commission / FTD"
+    sql: NULLIF(${total_reward}, 0) / NULLIF(${total_ftds}, 0) ;;
+    label: "Total Reward / FTD"
     value_format_name: usd
   }
 
