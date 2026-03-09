@@ -61,16 +61,57 @@ def find_database(mb, name_fragment):
 
 
 def find_affiliate_field_id(mb, db_id):
-    """Return the Metabase field ID for netrefer_stats.affiliate_name."""
-    fields = mb.get(f"/api/database/{db_id}/fields")
-    for f in fields:
-        if (f.get("table_name", "").lower() == "netrefer_stats"
-                and f.get("name", "").lower() == "affiliate_name"):
-            return f["id"]
+    """Return the Metabase field ID for netrefer_stats.affiliate_name.
+
+    Tries three endpoints in order so it works across Metabase versions.
+    """
+    # 1. /api/database/{id}/fields  (flat list, older versions)
+    try:
+        fields = mb.get(f"/api/database/{db_id}/fields")
+        for f in fields:
+            if (f.get("table_name", "").lower() == "netrefer_stats"
+                    and f.get("name", "").lower() == "affiliate_name"):
+                print(f"  affiliate_name field id={f['id']} (via /database/fields)")
+                return f["id"]
+    except Exception:
+        pass
+
+    # 2. /api/database/{id}/metadata  (nested tables→fields)
+    try:
+        meta = mb.get(f"/api/database/{db_id}/metadata")
+        for table in meta.get("tables", []):
+            if table["name"].lower() == "netrefer_stats":
+                for field in table.get("fields", []):
+                    if field["name"].lower() == "affiliate_name":
+                        print(f"  affiliate_name field id={field['id']} (via /database/metadata)")
+                        return field["id"]
+    except Exception:
+        pass
+
+    # 3. Walk /api/table list, then fetch query_metadata for the right table
+    try:
+        tables = mb.get("/api/table")
+        for t in tables:
+            if t["name"].lower() == "netrefer_stats" and t.get("db_id") == db_id:
+                tmeta = mb.get(f"/api/table/{t['id']}/query_metadata")
+                for field in tmeta.get("fields", []):
+                    if field["name"].lower() == "affiliate_name":
+                        print(f"  affiliate_name field id={field['id']} (via /table/query_metadata)")
+                        return field["id"]
+    except Exception:
+        pass
+
     raise RuntimeError(
-        "Could not find field 'affiliate_name' in table 'netrefer_stats'. "
-        "Make sure Metabase has synced the database schema."
+        "Could not find field 'affiliate_name' in table 'netrefer_stats'.\n"
+        "Run Admin → Databases → Sync database schema now, then retry."
     )
+
+
+def configure_field_for_dropdown(mb, field_id):
+    """Tell Metabase to cache all distinct values so the dropdown auto-loads."""
+    mb.put(f"/api/field/{field_id}", json={"has_field_values": "list"})
+    mb.post(f"/api/field/{field_id}/rescan_values")
+    print(f"  Field {field_id}: has_field_values=list, rescan triggered.")
 
 
 def existing_cards(mb):
@@ -408,7 +449,7 @@ def main():
 
     # Look up the affiliate_name field so we can use a field-filter template tag
     affiliate_field_id = find_affiliate_field_id(mb, db_id)
-    print(f"  affiliate_name field id={affiliate_field_id}")
+    configure_field_for_dropdown(mb, affiliate_field_id)
 
     # Upsert all cards (always PUT existing ones so SQL + template-tags stay current)
     existing = existing_cards(mb)
