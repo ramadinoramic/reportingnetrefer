@@ -434,10 +434,12 @@ def main():
     # ── Add cards to dashboard ─────────────────────────────────
     print("  Adding cards to dashboard …")
     dashcards = dashboard_layout(card_name_to_id)
-    for dc in dashcards:
-        try:
-            mb.post(f"/api/dashboard/{dash_id}/dashcards", json=dc)
-        except Exception:
+    # Metabase ≥0.46 expects POST /dashcards with {"cards": [...]}
+    # Older versions expect individual POSTs to /cards
+    try:
+        mb.post(f"/api/dashboard/{dash_id}/dashcards", json={"cards": dashcards})
+    except Exception:
+        for dc in dashcards:
             mb.post(f"/api/dashboard/{dash_id}/cards", json=dc)
     print(f"  Added {len(dashcards)} cards.")
 
