@@ -9,5 +9,6 @@ build/
 venv/
 drop/*.csv
 drop/archive/
+drop/processed/
 logs/
 *.log
