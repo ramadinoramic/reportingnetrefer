@@ -141,6 +141,28 @@ WHERE = """
 """
 
 
+def affiliate_list_card_def(db_id):
+    """Hidden card whose single column populates the Affiliate dropdown."""
+    return {
+        "name":    "AF – Affiliate List",
+        "display": "table",
+        "dataset_query": {
+            "type":     "native",
+            "database": db_id,
+            "native":   {
+                "query": (
+                    "SELECT DISTINCT affiliate_name "
+                    "FROM netrefer_stats "
+                    "WHERE affiliate_name IS NOT NULL AND affiliate_name != '' "
+                    "ORDER BY affiliate_name"
+                ),
+                "template-tags": {},
+            },
+        },
+        "visualization_settings": {},
+    }
+
+
 def card_defs(db_id):
     return [
         # ── KPI scalars ──────────────────────────────────────────────────
@@ -376,8 +398,27 @@ def main():
     db_id = find_database(mb, args.db_name)
     print(f"  Database id={db_id}")
 
-    # Create cards
+    # Create / locate the affiliate-list source card (used for dropdown)
     existing = existing_cards(mb)
+    af_list_def = affiliate_list_card_def(db_id)
+    af_list_name = af_list_def["name"]
+    if af_list_name in existing:
+        af_list_card_id = existing[af_list_name]
+        print(f"\n[skip] '{af_list_name}' (id={af_list_card_id})")
+    else:
+        r = mb.post("/api/card", json={
+            "name":                   af_list_name,
+            "display":                af_list_def["display"],
+            "dataset_query":          af_list_def["dataset_query"],
+            "visualization_settings": af_list_def["visualization_settings"],
+        })
+        af_list_card_id = r["id"]
+        print(f"\n[created] '{af_list_name}' (id={af_list_card_id})")
+
+    # Refresh existing-card list so newly created af_list_card is included
+    existing = existing_cards(mb)
+
+    # Create cards
     card_name_to_id = {}
     print(f"\nCreating cards …")
     for card in card_defs(db_id):
@@ -405,6 +446,11 @@ def main():
             "name":    "Affiliate Name",
             "slug":    "affiliate_name",
             "type":    "category",
+            "values_source_type": "card",
+            "values_source_config": {
+                "card_id":    af_list_card_id,
+                "value_field": ["field", "affiliate_name", {"base-type": "type/Text"}],
+            },
         },
         {
             "id":      PARAM_START,
