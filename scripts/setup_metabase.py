@@ -434,14 +434,28 @@ def main():
     # ── Add cards to dashboard ─────────────────────────────────
     print("  Adding cards to dashboard …")
     dashcards = dashboard_layout(card_name_to_id)
-    # Metabase ≥0.46 expects POST /dashcards with {"cards": [...]}
-    # Older versions expect individual POSTs to /cards
+
+    # Verify dashboard exists
+    dash_info = mb.get(f"/api/dashboard/{dash_id}")
+    print(f"  Dashboard confirmed: {dash_info.get('name')} (id={dash_id})")
+
+    # Try Metabase ≥0.46 bulk endpoint first
     try:
         mb.post(f"/api/dashboard/{dash_id}/dashcards", json={"cards": dashcards})
-    except Exception:
+        print(f"  Added {len(dashcards)} cards via /dashcards.")
+    except Exception as e1:
+        print(f"  /dashcards failed ({e1}), trying legacy /cards …")
+        # Legacy API uses camelCase
         for dc in dashcards:
-            mb.post(f"/api/dashboard/{dash_id}/cards", json=dc)
-    print(f"  Added {len(dashcards)} cards.")
+            legacy = {
+                "cardId": dc["card_id"],
+                "col":    dc["col"],
+                "row":    dc["row"],
+                "sizeX":  dc["size_x"],
+                "sizeY":  dc["size_y"],
+            }
+            mb.post(f"/api/dashboard/{dash_id}/cards", json=legacy)
+        print(f"  Added {len(dashcards)} cards via /cards.")
 
     print(f"\nDone!  Open: {args.host}/dashboard/{dash_id}")
 
