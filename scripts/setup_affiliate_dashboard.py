@@ -3,7 +3,7 @@
 setup_affiliate_dashboard.py  –  Creates a filterable Affiliate Deep Dive dashboard.
 
 Filters:
-  • Affiliate Name  (text search / dropdown)
+  • Affiliate Name  (dropdown – field filter)
   • Date Range      (start date → end date)
 
 Usage:
@@ -15,8 +15,6 @@ Usage:
 
 import argparse
 import sys
-import time
-import uuid
 import requests
 
 # ──────────────────────────────────────────────
@@ -48,6 +46,10 @@ class MetabaseClient:
         r.raise_for_status()
         return r.json()
 
+    def delete(self, path, **kw):
+        r = self.session.delete(f"{self.host}{path}", **kw)
+        r.raise_for_status()
+
 
 def find_database(mb, name_fragment):
     dbs = mb.get("/api/database")
@@ -56,6 +58,19 @@ def find_database(mb, name_fragment):
         if name_fragment.lower() in db["name"].lower():
             return db["id"]
     raise RuntimeError(f"No database matching '{name_fragment}'")
+
+
+def find_affiliate_field_id(mb, db_id):
+    """Return the Metabase field ID for netrefer_stats.affiliate_name."""
+    fields = mb.get(f"/api/database/{db_id}/fields")
+    for f in fields:
+        if (f.get("table_name", "").lower() == "netrefer_stats"
+                and f.get("name", "").lower() == "affiliate_name"):
+            return f["id"]
+    raise RuntimeError(
+        "Could not find field 'affiliate_name' in table 'netrefer_stats'. "
+        "Make sure Metabase has synced the database schema."
+    )
 
 
 def existing_cards(mb):
@@ -74,13 +89,19 @@ PARAM_START     = "a1b2c3d4-0002-0002-0002-000000000002"
 PARAM_END       = "a1b2c3d4-0003-0003-0003-000000000003"
 
 
-def template_tags():
+def template_tags(affiliate_field_id):
+    """
+    affiliate_name uses a field filter (dimension) so Metabase auto-loads
+    the dropdown from the mapped DB column.
+    """
     return {
         "affiliate_name": {
             "id":           "tt-affiliate",
             "name":         "affiliate_name",
             "display-name": "Affiliate Name",
-            "type":         "text",
+            "type":         "dimension",
+            "dimension":    ["field", affiliate_field_id, None],
+            "widget-type":  "string/=",
             "required":     False,
         },
         "start_date": {
@@ -106,7 +127,8 @@ def param_mappings(card_id):
         {
             "parameter_id": PARAM_AFFILIATE,
             "card_id":      card_id,
-            "target":       ["variable", ["template-tag", "affiliate_name"]],
+            # dimension target is required for field-filter template tags
+            "target":       ["dimension", ["template-tag", "affiliate_name"]],
         },
         {
             "parameter_id": PARAM_START,
@@ -125,51 +147,37 @@ def param_mappings(card_id):
 # Card definitions
 # ──────────────────────────────────────────────
 
-def native(db_id, sql):
+def native(db_id, sql, affiliate_field_id):
     return {
         "type":     "native",
         "database": db_id,
-        "native":   {"query": sql, "template-tags": template_tags()},
+        "native":   {
+            "query":         sql,
+            "template-tags": template_tags(affiliate_field_id),
+        },
     }
 
 
+# Field filter replaces the whole condition: [[AND {{affiliate_name}}]]
+# Metabase renders it as  AND affiliate_name = 'value'  when a value is chosen.
 WHERE = """
     WHERE 1=1
-    [[AND affiliate_name = {{affiliate_name}}]]
+    [[AND {{affiliate_name}}]]
     [[AND report_date >= {{start_date}}]]
     [[AND report_date <= {{end_date}}]]
 """
 
 
-def affiliate_list_card_def(db_id):
-    """Hidden card whose single column populates the Affiliate dropdown."""
-    return {
-        "name":    "AF – Affiliate List",
-        "display": "table",
-        "dataset_query": {
-            "type":     "native",
-            "database": db_id,
-            "native":   {
-                "query": (
-                    "SELECT DISTINCT affiliate_name "
-                    "FROM netrefer_stats "
-                    "WHERE affiliate_name IS NOT NULL AND affiliate_name != '' "
-                    "ORDER BY affiliate_name"
-                ),
-                "template-tags": {},
-            },
-        },
-        "visualization_settings": {},
-    }
+def card_defs(db_id, affiliate_field_id):
+    def q(sql):
+        return native(db_id, sql, affiliate_field_id)
 
-
-def card_defs(db_id):
     return [
         # ── KPI scalars ──────────────────────────────────────────────────
         {
             "name":    "AF – Clicks",
             "display": "scalar",
-            "dataset_query": native(db_id, f"""
+            "dataset_query": q(f"""
                 SELECT SUM(clicks) AS clicks
                 FROM netrefer_stats {WHERE}
             """),
@@ -178,7 +186,7 @@ def card_defs(db_id):
         {
             "name":    "AF – Registrations",
             "display": "scalar",
-            "dataset_query": native(db_id, f"""
+            "dataset_query": q(f"""
                 SELECT SUM(registrations) AS registrations
                 FROM netrefer_stats {WHERE}
             """),
@@ -187,7 +195,7 @@ def card_defs(db_id):
         {
             "name":    "AF – FTDs",
             "display": "scalar",
-            "dataset_query": native(db_id, f"""
+            "dataset_query": q(f"""
                 SELECT SUM(first_depositors) AS ftds
                 FROM netrefer_stats {WHERE}
             """),
@@ -196,7 +204,7 @@ def card_defs(db_id):
         {
             "name":    "AF – Net Revenue",
             "display": "scalar",
-            "dataset_query": native(db_id, f"""
+            "dataset_query": q(f"""
                 SELECT ROUND(SUM(net_revenue), 2) AS net_revenue
                 FROM netrefer_stats {WHERE}
             """),
@@ -205,7 +213,7 @@ def card_defs(db_id):
         {
             "name":    "AF – Total Commission",
             "display": "scalar",
-            "dataset_query": native(db_id, f"""
+            "dataset_query": q(f"""
                 SELECT ROUND(SUM(total_reward), 2) AS commission
                 FROM netrefer_stats {WHERE}
             """),
@@ -214,7 +222,7 @@ def card_defs(db_id):
         {
             "name":    "AF – Deposits",
             "display": "scalar",
-            "dataset_query": native(db_id, f"""
+            "dataset_query": q(f"""
                 SELECT ROUND(SUM(deposits), 2) AS deposits
                 FROM netrefer_stats {WHERE}
             """),
@@ -224,7 +232,7 @@ def card_defs(db_id):
         {
             "name":    "AF – Daily Revenue Trend",
             "display": "line",
-            "dataset_query": native(db_id, f"""
+            "dataset_query": q(f"""
                 SELECT
                     report_date,
                     ROUND(SUM(net_revenue), 2) AS net_revenue,
@@ -241,11 +249,11 @@ def card_defs(db_id):
         {
             "name":    "AF – Daily Conversions",
             "display": "line",
-            "dataset_query": native(db_id, f"""
+            "dataset_query": q(f"""
                 SELECT
                     report_date,
-                    SUM(clicks)          AS clicks,
-                    SUM(registrations)   AS registrations,
+                    SUM(clicks)           AS clicks,
+                    SUM(registrations)    AS registrations,
                     SUM(first_depositors) AS ftds
                 FROM netrefer_stats {WHERE}
                 GROUP BY report_date
@@ -260,7 +268,7 @@ def card_defs(db_id):
         {
             "name":    "AF – Conversion Funnel",
             "display": "bar",
-            "dataset_query": native(db_id, f"""
+            "dataset_query": q(f"""
                 SELECT 'Clicks'        AS stage, SUM(clicks)           AS total FROM netrefer_stats {WHERE}
                 UNION ALL
                 SELECT 'Registrations',          SUM(registrations)            FROM netrefer_stats {WHERE}
@@ -276,7 +284,7 @@ def card_defs(db_id):
         {
             "name":    "AF – Revenue by Campaign",
             "display": "bar",
-            "dataset_query": native(db_id, f"""
+            "dataset_query": q(f"""
                 SELECT
                     campaign_name,
                     ROUND(SUM(net_revenue), 2) AS net_revenue,
@@ -295,7 +303,7 @@ def card_defs(db_id):
         {
             "name":    "AF – Revenue by Country",
             "display": "pie",
-            "dataset_query": native(db_id, f"""
+            "dataset_query": q(f"""
                 SELECT
                     country,
                     ROUND(SUM(net_revenue), 2) AS net_revenue
@@ -313,7 +321,7 @@ def card_defs(db_id):
         {
             "name":    "AF – Daily Detail Table",
             "display": "table",
-            "dataset_query": native(db_id, f"""
+            "dataset_query": q(f"""
                 SELECT
                     report_date,
                     campaign_name,
@@ -398,77 +406,61 @@ def main():
     db_id = find_database(mb, args.db_name)
     print(f"  Database id={db_id}")
 
-    # Create / locate the affiliate-list source card (used for dropdown)
-    existing = existing_cards(mb)
-    af_list_def = affiliate_list_card_def(db_id)
-    af_list_name = af_list_def["name"]
-    if af_list_name in existing:
-        af_list_card_id = existing[af_list_name]
-        print(f"\n[skip] '{af_list_name}' (id={af_list_card_id})")
-    else:
-        r = mb.post("/api/card", json={
-            "name":                   af_list_name,
-            "display":                af_list_def["display"],
-            "dataset_query":          af_list_def["dataset_query"],
-            "visualization_settings": af_list_def["visualization_settings"],
-        })
-        af_list_card_id = r["id"]
-        print(f"\n[created] '{af_list_name}' (id={af_list_card_id})")
+    # Look up the affiliate_name field so we can use a field-filter template tag
+    affiliate_field_id = find_affiliate_field_id(mb, db_id)
+    print(f"  affiliate_name field id={affiliate_field_id}")
 
-    # Refresh existing-card list so newly created af_list_card is included
+    # Upsert all cards (always PUT existing ones so SQL + template-tags stay current)
     existing = existing_cards(mb)
-
-    # Create cards
     card_name_to_id = {}
-    print(f"\nCreating cards …")
-    for card in card_defs(db_id):
+    print(f"\nUpserting cards …")
+    for card in card_defs(db_id, affiliate_field_id):
         name = card["name"]
-        if name in existing:
-            print(f"  [skip] {name}")
-            card_name_to_id[name] = existing[name]
-            continue
-        result = mb.post("/api/card", json={
+        payload = {
             "name":                   name,
             "display":                card["display"],
             "dataset_query":          card["dataset_query"],
             "visualization_settings": card.get("visualization_settings", {}),
-        })
-        card_name_to_id[name] = result["id"]
-        print(f"  [created] {name} (id={result['id']})")
+        }
+        if name in existing:
+            card_id = existing[name]
+            mb.put(f"/api/card/{card_id}", json=payload)
+            card_name_to_id[name] = card_id
+            print(f"  [updated] {name} (id={card_id})")
+        else:
+            result = mb.post("/api/card", json=payload)
+            card_name_to_id[name] = result["id"]
+            print(f"  [created] {name} (id={result['id']})")
 
-    # Create dashboard
-    dash_name = "Affiliate Deep Dive"
-    existing_dashes = existing_dashboards(mb)
-
+    # Dashboard parameters – string/= on a field filter gives the auto-dropdown
     dashboard_params = [
         {
-            "id":      PARAM_AFFILIATE,
-            "name":    "Affiliate Name",
-            "slug":    "affiliate_name",
-            "type":    "category",
-            "values_source_type": "card",
-            "values_source_config": {
-                "card_id":    af_list_card_id,
-                "value_field": ["field", "affiliate_name", {"base-type": "type/Text"}],
-            },
+            "id":   PARAM_AFFILIATE,
+            "name": "Affiliate Name",
+            "slug": "affiliate_name",
+            "type": "string/=",
         },
         {
-            "id":      PARAM_START,
-            "name":    "Start Date",
-            "slug":    "start_date",
-            "type":    "date/single",
+            "id":   PARAM_START,
+            "name": "Start Date",
+            "slug": "start_date",
+            "type": "date/single",
         },
         {
-            "id":      PARAM_END,
-            "name":    "End Date",
-            "slug":    "end_date",
-            "type":    "date/single",
+            "id":   PARAM_END,
+            "name": "End Date",
+            "slug": "end_date",
+            "type": "date/single",
         },
     ]
 
+    # Create or reuse dashboard
+    dash_name = "Affiliate Deep Dive"
+    existing_dashes = existing_dashboards(mb)
+
     if dash_name in existing_dashes:
         dash_id = existing_dashes[dash_name]
-        print(f"\n[skip] Dashboard '{dash_name}' already exists (id={dash_id})")
+        print(f"\n[existing] Dashboard '{dash_name}' (id={dash_id})")
     else:
         dash = mb.post("/api/dashboard", json={
             "name":        dash_name,
@@ -478,14 +470,14 @@ def main():
         dash_id = dash["id"]
         print(f"\n[created] Dashboard '{dash_name}' (id={dash_id})")
 
-    # Add cards
+    # Always update cards + parameters (idempotent)
     dashcards = build_dashcards(card_name_to_id)
-    print("  Adding cards …")
+    print("  Updating dashboard …")
     mb.put(f"/api/dashboard/{dash_id}", json={
         "parameters": dashboard_params,
         "dashcards":  dashcards,
     })
-    print(f"  Added {len(dashcards)} cards.")
+    print(f"  {len(dashcards)} cards wired.")
     print(f"\nDone!  Open: {args.host}/dashboard/{dash_id}")
 
 
