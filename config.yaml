@@ -1,0 +1,16 @@
+etl:
+  mode: api                    # "api" | "csv"
+  lookback_days: 1             # API mode: days back from yesterday
+  batch_size: 500              # rows per DB upsert batch
+  archive_processed: true      # move processed CSVs to drop/archive/
+
+api:
+  timeout_seconds: 120
+  max_retries: 3
+
+database:
+  pool_recycle: 3600
+
+logging:
+  level: INFO
+  format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"

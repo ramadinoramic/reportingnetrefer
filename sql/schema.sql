@@ -1,5 +1,6 @@
 -- ============================================================
 -- Netrefer Reporting Schema
+-- Run: mysql -h HOST -u USER -pPASS < sql/schema.sql
 -- ============================================================
 
 CREATE DATABASE IF NOT EXISTS netrefer_reporting
@@ -88,3 +89,21 @@ FROM netrefer_stats
 GROUP BY
     report_date, affiliate_id, affiliate_name,
     campaign_id, campaign_name, brand, country, media_type;
+
+
+-- ------------------------------------------------------------
+-- ETL audit log
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS etl_runs (
+    run_id          VARCHAR(64)                          NOT NULL,
+    started_at      TIMESTAMP                            NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at     TIMESTAMP                            NULL,
+    mode            ENUM('api','csv')                    NOT NULL,
+    source_detail   TEXT                                 NULL,
+    rows_upserted   INT UNSIGNED                         NOT NULL DEFAULT 0,
+    status          ENUM('running','success','failed')   NOT NULL DEFAULT 'running',
+    error_message   TEXT                                 NULL,
+    PRIMARY KEY (run_id),
+    INDEX idx_started_at (started_at),
+    INDEX idx_status     (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
