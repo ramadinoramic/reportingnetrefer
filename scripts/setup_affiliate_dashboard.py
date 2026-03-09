@@ -111,6 +111,25 @@ def configure_field_for_dropdown(mb, field_id):
     print(f"  Field {field_id}: has_field_values=list, rescan triggered.")
 
 
+def db_engine(mb, db_id):
+    """Return the lowercase engine string for the database (e.g. 'postgres', 'mysql', 'h2')."""
+    try:
+        info = mb.get(f"/api/database/{db_id}")
+        return info.get("engine", "postgres").lower()
+    except Exception:
+        return "postgres"
+
+
+def last_7_days_expr(engine):
+    """SQL expression for 'date 7 days ago', adapted to the DB engine."""
+    if engine in ("h2", "sqlite"):
+        return "date('now', '-7 days')"
+    if engine in ("mysql", "mariadb"):
+        return "DATE_SUB(CURDATE(), INTERVAL 7 DAY)"
+    # postgres, redshift, snowflake, bigquery, etc.
+    return "CURRENT_DATE - INTERVAL '7 days'"
+
+
 def existing_cards(mb):
     return {c["name"]: c["id"] for c in mb.get("/api/card")}
 
@@ -146,7 +165,7 @@ def template_tags(affiliate_field_id, report_date_field_id):
             "name":         "report_date",
             "display-name": "Date",
             "type":         "dimension",
-            "dimension":    ["field", report_date_field_id, {"temporal-unit": "day"}],
+            "dimension":    ["field", report_date_field_id, None],
             "widget-type":  "date/all-options",
             "required":     False,
         },
@@ -206,12 +225,14 @@ WHERE = """
 """
 
 
-def card_defs(db_id, affiliate_field_id, report_date_field_id):
+def card_defs(db_id, affiliate_field_id, report_date_field_id, engine="postgres"):
     def q(sql):
         return native(db_id, sql, affiliate_field_id, report_date_field_id)
 
     def q_fixed(sql):
         return native_fixed(db_id, sql)
+
+    seven_days_ago = last_7_days_expr(engine)
 
     return [
         # ── KPI scalars ──────────────────────────────────────────────────
@@ -381,7 +402,7 @@ def card_defs(db_id, affiliate_field_id, report_date_field_id):
                          ELSE 0
                     END                                             AS reg_to_ftd_pct
                 FROM netrefer_stats
-                WHERE report_date >= CURRENT_DATE - INTERVAL '7 days'
+                WHERE report_date >= {seven_days_ago}
                 GROUP BY affiliate_name
                 ORDER BY net_revenue DESC
                 LIMIT 10
@@ -484,13 +505,15 @@ def main():
     affiliate_field_id   = find_field_id(mb, db_id, "netrefer_stats", "affiliate_name")
     report_date_field_id = find_field_id(mb, db_id, "netrefer_stats", "report_date")
     configure_field_for_dropdown(mb, affiliate_field_id)
+    engine = db_engine(mb, db_id)
+    print(f"  DB engine: {engine}")
 
     # Upsert all cards (always PUT existing ones so SQL + template-tags stay current)
     existing = existing_cards(mb)
     card_name_to_id = {}
     card_no_params  = set()
     print(f"\nUpserting cards …")
-    for card in card_defs(db_id, affiliate_field_id, report_date_field_id):
+    for card in card_defs(db_id, affiliate_field_id, report_date_field_id, engine):
         name = card["name"]
         if card.get("no_params"):
             card_no_params.add(name)
