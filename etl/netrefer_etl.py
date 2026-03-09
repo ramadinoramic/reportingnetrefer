@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-Netrefer → MySQL ETL
-====================
-Supports two ingestion modes:
-  1. API mode  – fetches reports directly from the Netrefer API
-  2. CSV mode  – watches a drop folder for manually exported CSV files
+Netrefer CSV → MySQL ETL
+========================
+Drop one or more Netrefer CSV exports into the drop folder (or pass a file
+path directly) and this script upserts the data into MySQL.
 
 Usage:
-    python etl/netrefer_etl.py --mode api --start 2024-01-01 --end 2024-01-31
-    python etl/netrefer_etl.py --mode csv --file /data/netrefer/report.csv
-    python etl/netrefer_etl.py --mode csv --dir  /data/netrefer/incoming/
+    # Load a single file
+    python etl/netrefer_etl.py --file /path/to/report.csv
+
+    # Load all CSVs from the drop folder (set CSV_DROP_DIR in .env)
+    python etl/netrefer_etl.py --dir
 """
 
 import argparse
@@ -19,13 +20,13 @@ import logging
 import os
 import shutil
 import sys
-from datetime import datetime, date, timedelta
+import uuid
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import mysql.connector
-import requests
 import yaml
 from dotenv import load_dotenv
 
@@ -46,7 +47,6 @@ log = logging.getLogger("netrefer_etl")
 # Config helpers
 # ---------------------------------------------------------------------------
 def load_column_map() -> Dict[str, str]:
-    """Load CSV-header → DB-column mapping from YAML."""
     map_path = Path(__file__).parent / "column_map.yaml"
     with open(map_path) as f:
         cfg = yaml.safe_load(f)
@@ -54,7 +54,6 @@ def load_column_map() -> Dict[str, str]:
 
 
 def db_connection():
-    """Return a MySQL connection using environment variables."""
     return mysql.connector.connect(
         host=os.environ["MYSQL_HOST"],
         port=int(os.getenv("MYSQL_PORT", 3306)),
@@ -67,87 +66,49 @@ def db_connection():
 
 
 # ---------------------------------------------------------------------------
-# Netrefer API client
-# ---------------------------------------------------------------------------
-class NetreferClient:
-    """Thin HTTP wrapper for the Netrefer reporting API."""
-
-    def __init__(self):
-        self.api_key = os.environ["NETREFER_API_KEY"]
-        self.base_url = os.getenv(
-            "NETREFER_API_URL", "https://api.netrefer.com/v1/reports"
-        )
-
-    def fetch_csv(self, start: date, end: date) -> str:
-        """
-        Fetch the affiliate stats report as CSV text.
-        Adjust query parameters to match your Netrefer API contract.
-        """
-        params = {
-            "apikey": self.api_key,
-            "from": start.isoformat(),
-            "to": end.isoformat(),
-            "format": "csv",
-            "report": "affiliate_stats",
-        }
-        log.info("Fetching Netrefer API %s → %s", start, end)
-        resp = requests.get(self.base_url, params=params, timeout=120)
-        resp.raise_for_status()
-        log.info("Received %d bytes from Netrefer API", len(resp.content))
-        return resp.text
-
-
-# ---------------------------------------------------------------------------
 # CSV parser
 # ---------------------------------------------------------------------------
+DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%Y/%m/%d")
+
+
+def _parse_date(raw: str):
+    for fmt in DATE_FORMATS:
+        try:
+            return datetime.strptime(raw.strip(), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def parse_csv(raw_csv: str, col_map: Dict[str, str]) -> List[Dict]:
-    """
-    Parse raw CSV text into a list of dicts keyed by DB column names.
-    Unmapped columns are silently ignored.
-    """
     rows = []
     reader = csv.DictReader(io.StringIO(raw_csv))
-
     for i, row in enumerate(reader, start=1):
         mapped = {}
         for csv_col, value in row.items():
             db_col = col_map.get(csv_col.strip())
             if db_col:
-                mapped[db_col] = value.strip() if value else ""
+                mapped[db_col] = (value or "").strip()
 
         if not mapped.get("report_date"):
             log.warning("Row %d skipped – no report_date", i)
             continue
 
-        try:
-            mapped["report_date"] = datetime.strptime(
-                mapped["report_date"], "%Y-%m-%d"
-            ).date()
-        except ValueError:
-            # Try common alternate formats
-            for fmt in ("%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y"):
-                try:
-                    mapped["report_date"] = datetime.strptime(
-                        mapped["report_date"], fmt
-                    ).date()
-                    break
-                except ValueError:
-                    continue
-            else:
-                log.warning("Row %d skipped – unparseable date: %s", i, mapped["report_date"])
-                continue
-
+        parsed_date = _parse_date(mapped["report_date"])
+        if not parsed_date:
+            log.warning("Row %d skipped – unparseable date: %s", i, mapped["report_date"])
+            continue
+        mapped["report_date"] = parsed_date
         rows.append(mapped)
 
-    log.info("Parsed %d rows from CSV", len(rows))
+    log.info("Parsed %d rows", len(rows))
     return rows
 
 
 # ---------------------------------------------------------------------------
-# Data transformation
+# Transform
 # ---------------------------------------------------------------------------
 def _to_cents(value: str) -> int:
-    """Convert a currency string like '1,234.56' to integer cents."""
     if not value:
         return 0
     try:
@@ -171,7 +132,6 @@ INT_COLS = {"impressions", "clicks", "registrations", "first_depositors", "total
 
 
 def transform(rows: List[Dict]) -> List[Dict]:
-    """Cast types and rename currency columns to *_cents."""
     result = []
     for row in rows:
         rec = {
@@ -228,29 +188,49 @@ ON DUPLICATE KEY UPDATE
     updated_at          = CURRENT_TIMESTAMP
 """
 
+AUDIT_START = """
+INSERT INTO etl_runs (run_id, mode, source_detail, status)
+VALUES (%s, 'csv', %s, 'running')
+"""
 
-def load_to_mysql(records: List[Dict], batch_size: int = 500) -> int:
-    """Upsert records into netrefer_stats. Returns total rows affected."""
+AUDIT_FINISH = """
+UPDATE etl_runs
+SET finished_at = CURRENT_TIMESTAMP,
+    rows_upserted = %s,
+    status = %s,
+    error_message = %s
+WHERE run_id = %s
+"""
+
+
+def load_to_mysql(records: List[Dict], source: str, batch_size: int = 500) -> int:
     if not records:
         log.warning("No records to load")
         return 0
 
+    run_id = str(uuid.uuid4())
     conn = db_connection()
     cursor = conn.cursor()
     total = 0
 
     try:
+        cursor.execute(AUDIT_START, (run_id, source))
+        conn.commit()
+
         for i in range(0, len(records), batch_size):
             batch = records[i : i + batch_size]
             cursor.executemany(UPSERT_SQL, batch)
             conn.commit()
             total += cursor.rowcount
-            log.info(
-                "Loaded batch %d-%d (%d rows affected)",
-                i + 1, i + len(batch), cursor.rowcount,
-            )
-    except Exception:
+            log.info("Batch %d–%d: %d rows affected", i + 1, i + len(batch), cursor.rowcount)
+
+        cursor.execute(AUDIT_FINISH, (total, "success", None, run_id))
+        conn.commit()
+
+    except Exception as exc:
         conn.rollback()
+        cursor.execute(AUDIT_FINISH, (total, "failed", str(exc), run_id))
+        conn.commit()
         raise
     finally:
         cursor.close()
@@ -260,36 +240,31 @@ def load_to_mysql(records: List[Dict], batch_size: int = 500) -> int:
 
 
 # ---------------------------------------------------------------------------
-# File-drop mode helpers
+# File helpers
 # ---------------------------------------------------------------------------
-def process_csv_file(file_path: Path, col_map: Dict[str, str]) -> int:
-    """Parse, transform, and load a single CSV file. Returns rows loaded."""
-    log.info("Processing file: %s", file_path)
+def process_file(file_path: Path, col_map: Dict[str, str]) -> int:
+    log.info("Loading: %s", file_path)
     raw = file_path.read_text(encoding="utf-8-sig")  # handles BOM
     rows = parse_csv(raw, col_map)
     records = transform(rows)
-    count = load_to_mysql(records)
+    count = load_to_mysql(records, source=file_path.name)
     log.info("Done: %d rows upserted from %s", count, file_path.name)
     return count
 
 
-def process_csv_dir(drop_dir: Path, processed_dir: Optional[Path], col_map: Dict[str, str]):
-    """Process all *.csv files in drop_dir, moving them to processed_dir when done."""
+def process_drop_dir(drop_dir: Path, processed_dir: Path, col_map: Dict[str, str]):
     csv_files = sorted(drop_dir.glob("*.csv"))
     if not csv_files:
         log.info("No CSV files found in %s", drop_dir)
         return
 
-    if processed_dir:
-        processed_dir.mkdir(parents=True, exist_ok=True)
+    processed_dir.mkdir(parents=True, exist_ok=True)
 
     for f in csv_files:
         try:
-            process_csv_file(f, col_map)
-            if processed_dir:
-                dest = processed_dir / f.name
-                shutil.move(str(f), str(dest))
-                log.info("Moved %s → %s", f.name, dest)
+            process_file(f, col_map)
+            shutil.move(str(f), str(processed_dir / f.name))
+            log.info("Moved to processed: %s", f.name)
         except Exception as e:
             log.error("Failed to process %s: %s", f.name, e, exc_info=True)
 
@@ -297,50 +272,22 @@ def process_csv_dir(drop_dir: Path, processed_dir: Optional[Path], col_map: Dict
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-def parse_args():
-    p = argparse.ArgumentParser(description="Netrefer → MySQL ETL")
-    sub = p.add_subparsers(dest="mode", required=True)
-
-    # API mode
-    api = sub.add_parser("api", help="Fetch data from Netrefer API")
-    api.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
-    api.add_argument("--end", help="End date YYYY-MM-DD (default: yesterday)")
-
-    # CSV mode (single file)
-    csv_p = sub.add_parser("csv", help="Load a CSV file or directory")
-    csv_p.add_argument("--file", help="Path to a single CSV file")
-    csv_p.add_argument("--dir",  help="Directory containing CSV files")
-
-    return p.parse_args()
-
-
 def main():
-    args = parse_args()
+    p = argparse.ArgumentParser(description="Netrefer CSV → MySQL ETL")
+    group = p.add_mutually_exclusive_group(required=True)
+    group.add_argument("--file", help="Path to a single CSV file")
+    group.add_argument("--dir",  action="store_true",
+                       help="Process all CSVs in CSV_DROP_DIR (set in .env)")
+    args = p.parse_args()
+
     col_map = load_column_map()
 
-    if args.mode == "api":
-        start = datetime.strptime(args.start, "%Y-%m-%d").date()
-        end = (
-            datetime.strptime(args.end, "%Y-%m-%d").date()
-            if args.end
-            else date.today() - timedelta(days=1)
-        )
-        client = NetreferClient()
-        raw = client.fetch_csv(start, end)
-        rows = parse_csv(raw, col_map)
-        records = transform(rows)
-        count = load_to_mysql(records)
-        log.info("ETL complete: %d rows upserted", count)
-
-    elif args.mode == "csv":
-        if args.file:
-            process_csv_file(Path(args.file), col_map)
-        elif args.dir:
-            processed = Path(os.getenv("PROCESSED_DIR", str(Path(args.dir) / "processed")))
-            process_csv_dir(Path(args.dir), processed, col_map)
-        else:
-            log.error("Provide --file or --dir for csv mode")
-            sys.exit(1)
+    if args.file:
+        process_file(Path(args.file), col_map)
+    else:
+        drop_dir = Path(os.getenv("CSV_DROP_DIR", "./drop"))
+        processed_dir = Path(os.getenv("PROCESSED_DIR", str(drop_dir / "processed")))
+        process_drop_dir(drop_dir, processed_dir, col_map)
 
 
 if __name__ == "__main__":
