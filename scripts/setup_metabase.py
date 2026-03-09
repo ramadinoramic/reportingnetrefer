@@ -439,23 +439,27 @@ def main():
     dash_info = mb.get(f"/api/dashboard/{dash_id}")
     print(f"  Dashboard confirmed: {dash_info.get('name')} (id={dash_id})")
 
-    # Try Metabase ≥0.46 bulk endpoint first
+    # Metabase v0.50+: PUT /api/dashboard/:id with dashcards array
     try:
-        mb.post(f"/api/dashboard/{dash_id}/dashcards", json={"cards": dashcards})
-        print(f"  Added {len(dashcards)} cards via /dashcards.")
+        mb.put(f"/api/dashboard/{dash_id}", json={"dashcards": dashcards})
+        print(f"  Added {len(dashcards)} cards via PUT /dashboard.")
     except Exception as e1:
-        print(f"  /dashcards failed ({e1}), trying legacy /cards …")
-        # Legacy API uses camelCase
-        for dc in dashcards:
-            legacy = {
-                "cardId": dc["card_id"],
-                "col":    dc["col"],
-                "row":    dc["row"],
-                "sizeX":  dc["size_x"],
-                "sizeY":  dc["size_y"],
-            }
-            mb.post(f"/api/dashboard/{dash_id}/cards", json=legacy)
-        print(f"  Added {len(dashcards)} cards via /cards.")
+        print(f"  PUT failed ({e1}), trying POST /dashcards …")
+        try:
+            mb.post(f"/api/dashboard/{dash_id}/dashcards", json={"cards": dashcards})
+            print(f"  Added {len(dashcards)} cards via POST /dashcards.")
+        except Exception as e2:
+            print(f"  POST /dashcards failed ({e2}), trying legacy POST /cards …")
+            for dc in dashcards:
+                legacy = {
+                    "cardId": dc["card_id"],
+                    "col":    dc["col"],
+                    "row":    dc["row"],
+                    "sizeX":  dc["size_x"],
+                    "sizeY":  dc["size_y"],
+                }
+                mb.post(f"/api/dashboard/{dash_id}/cards", json=legacy)
+            print(f"  Added {len(dashcards)} cards via legacy POST /cards.")
 
     print(f"\nDone!  Open: {args.host}/dashboard/{dash_id}")
 
