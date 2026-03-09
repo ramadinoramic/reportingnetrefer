@@ -152,14 +152,19 @@ def existing_dashboards(mb):
 # ──────────────────────────────────────────────
 # Parameter IDs (fixed so re-runs are stable)
 # ──────────────────────────────────────────────
-PARAM_AFFILIATE = "a1b2c3d4-0001-0001-0001-000000000001"
-PARAM_DATE      = "a1b2c3d4-0002-0002-0002-000000000002"
+PARAM_AFFILIATE  = "a1b2c3d4-0001-0001-0001-000000000001"
+PARAM_START_DATE = "a1b2c3d4-0002-0002-0002-000000000002"
+PARAM_END_DATE   = "a1b2c3d4-0003-0003-0003-000000000003"
 
 
-def template_tags(affiliate_field_id, report_date_field_id):
+def template_tags(affiliate_field_id):
     """
-    affiliate_name  – field filter → auto-dropdown
-    report_date     – field filter → date/all-options (Yesterday, Last 7 days, …)
+    affiliate_name – field filter → auto-dropdown
+    start_date     – date variable → 'From Date' single-date picker
+    end_date       – date variable → 'To Date'   single-date picker
+
+    Using plain "date" type vars (not dimension/field-filter) means
+    filtering works regardless of whether the DB column is DATE or TEXT.
     """
     return {
         "affiliate_name": {
@@ -171,13 +176,18 @@ def template_tags(affiliate_field_id, report_date_field_id):
             "widget-type":  "string/=",
             "required":     False,
         },
-        "report_date": {
-            "id":           "tt-date",
-            "name":         "report_date",
-            "display-name": "Date",
-            "type":         "dimension",
-            "dimension":    ["field", report_date_field_id, None],
-            "widget-type":  "date/all-options",
+        "start_date": {
+            "id":           "tt-start-date",
+            "name":         "start_date",
+            "display-name": "From Date",
+            "type":         "date",
+            "required":     False,
+        },
+        "end_date": {
+            "id":           "tt-end-date",
+            "name":         "end_date",
+            "display-name": "To Date",
+            "type":         "date",
             "required":     False,
         },
     }
@@ -189,12 +199,19 @@ def param_mappings(card_id):
         {
             "parameter_id": PARAM_AFFILIATE,
             "card_id":      card_id,
+            # dimension tag → use "dimension" target
             "target":       ["dimension", ["template-tag", "affiliate_name"]],
         },
         {
-            "parameter_id": PARAM_DATE,
+            "parameter_id": PARAM_START_DATE,
             "card_id":      card_id,
-            "target":       ["dimension", ["template-tag", "report_date"]],
+            # plain variable tag → use "variable" target
+            "target":       ["variable", ["template-tag", "start_date"]],
+        },
+        {
+            "parameter_id": PARAM_END_DATE,
+            "card_id":      card_id,
+            "target":       ["variable", ["template-tag", "end_date"]],
         },
     ]
 
@@ -203,13 +220,13 @@ def param_mappings(card_id):
 # Card definitions
 # ──────────────────────────────────────────────
 
-def native(db_id, sql, affiliate_field_id, report_date_field_id):
+def native(db_id, sql, affiliate_field_id):
     return {
         "type":     "native",
         "database": db_id,
         "native":   {
             "query":         sql,
-            "template-tags": template_tags(affiliate_field_id, report_date_field_id),
+            "template-tags": template_tags(affiliate_field_id),
         },
     }
 
@@ -226,19 +243,22 @@ def native_fixed(db_id, sql):
     }
 
 
-# Field filters replace the whole condition when a value is chosen.
-# [[AND {{affiliate_name}}]]  →  AND affiliate_name = 'value'
-# [[AND {{report_date}}]]     →  AND report_date >= '2024-01-01' AND report_date <= '2024-01-31'
+# How the optional filters are injected:
+#   [[AND {{affiliate_name}}]]              → AND affiliate_name = 'value'   (field filter)
+#   [[AND report_date >= {{start_date}}]]   → AND report_date >= '2024-01-01' (date var)
+#   [[AND report_date <= {{end_date}}]]     → AND report_date <= '2024-01-31' (date var)
+# When no value is selected the whole [[...]] block is dropped automatically.
 WHERE = """
     WHERE 1=1
     [[AND {{affiliate_name}}]]
-    [[AND {{report_date}}]]
+    [[AND report_date >= {{start_date}}]]
+    [[AND report_date <= {{end_date}}]]
 """
 
 
-def card_defs(db_id, affiliate_field_id, report_date_field_id, engine="postgres"):
+def card_defs(db_id, affiliate_field_id, engine="postgres"):
     def q(sql):
-        return native(db_id, sql, affiliate_field_id, report_date_field_id)
+        return native(db_id, sql, affiliate_field_id)
 
     def q_fixed(sql):
         return native_fixed(db_id, sql)
@@ -395,7 +415,7 @@ def card_defs(db_id, affiliate_field_id, report_date_field_id, engine="postgres"
             "name":    "AF – Top 10 Affiliates (Last 7 Days)",
             "display": "table",
             "no_params": True,
-            "dataset_query": q_fixed("""
+            "dataset_query": q_fixed(f"""
                 SELECT
                     affiliate_name,
                     SUM(clicks)                                     AS clicks,
@@ -415,7 +435,7 @@ def card_defs(db_id, affiliate_field_id, report_date_field_id, engine="postgres"
                 FROM netrefer_stats
                 WHERE report_date >= {seven_days_ago}
                 GROUP BY affiliate_name
-                ORDER BY net_revenue DESC
+                ORDER BY ftds DESC
                 LIMIT 10
             """),
             "visualization_settings": {},
@@ -513,11 +533,9 @@ def main():
     db_id = find_database(mb, args.db_name)
     print(f"  Database id={db_id}")
 
-    # Look up field IDs for template-tag field filters
-    affiliate_field_id   = find_field_id(mb, db_id, "netrefer_stats", "affiliate_name")
-    report_date_field_id = find_field_id(mb, db_id, "netrefer_stats", "report_date")
+    # Look up field ID for the affiliate dropdown filter
+    affiliate_field_id = find_field_id(mb, db_id, "netrefer_stats", "affiliate_name")
     configure_field_for_dropdown(mb, affiliate_field_id)
-    configure_date_field(mb, report_date_field_id)
     engine = db_engine(mb, db_id)
     seven_days_sql = last_7_days_expr(engine)
     print(f"  DB engine: {engine}  →  last-7-days expr: {seven_days_sql}")
@@ -527,7 +545,7 @@ def main():
     card_name_to_id = {}
     card_no_params  = set()
     print(f"\nUpserting cards …")
-    for card in card_defs(db_id, affiliate_field_id, report_date_field_id, engine):
+    for card in card_defs(db_id, affiliate_field_id, engine):
         name = card["name"]
         if card.get("no_params"):
             card_no_params.add(name)
@@ -556,10 +574,16 @@ def main():
             "type": "string/=",
         },
         {
-            "id":   PARAM_DATE,
-            "name": "Date",
-            "slug": "report_date",
-            "type": "date/all-options",
+            "id":   PARAM_START_DATE,
+            "name": "From Date",
+            "slug": "start_date",
+            "type": "date/single",
+        },
+        {
+            "id":   PARAM_END_DATE,
+            "name": "To Date",
+            "slug": "end_date",
+            "type": "date/single",
         },
     ]
 
