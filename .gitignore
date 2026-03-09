@@ -12,3 +12,4 @@ drop/archive/
 drop/processed/
 logs/
 *.log
+reports/

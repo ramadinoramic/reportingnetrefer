@@ -1,4 +1,4 @@
-.PHONY: setup up down logs db-shell load load-dir
+.PHONY: setup up down logs db-shell load load-dir board-report
 
 PYTHON := $(shell command -v python3 || command -v python)
 
@@ -31,3 +31,15 @@ load-dir:
 # Load a single file: make load FILE=drop/netrefer_2024-01-31.csv
 load:
 	$(PYTHON) etl/netrefer_etl.py --file $(FILE)
+
+# Generate C-Level / Board HTML report
+# Examples:
+#   make board-report                   ← latest month in DB
+#   make board-report MONTH=2026-03     ← specific month
+#   make board-report FROM=2026-03-01 TO=2026-03-08  ← custom range
+board-report:
+	$(PYTHON) scripts/generate_board_report.py \
+		$(if $(MONTH),--month $(MONTH),) \
+		$(if $(FROM),--from $(FROM),) \
+		$(if $(TO),--to $(TO),) \
+		$(if $(OUTPUT),--output $(OUTPUT),)
