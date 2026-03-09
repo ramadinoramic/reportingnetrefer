@@ -4,7 +4,7 @@ setup_affiliate_dashboard.py  –  Creates a filterable Affiliate Deep Dive dash
 
 Filters:
   • Affiliate Name  (dropdown – field filter)
-  • Date Range      (start date → end date)
+  • Date            (date/all-options field filter – Yesterday / Last 7 days / range / …)
 
 Usage:
     python scripts/setup_affiliate_dashboard.py \
@@ -60,18 +60,15 @@ def find_database(mb, name_fragment):
     raise RuntimeError(f"No database matching '{name_fragment}'")
 
 
-def find_affiliate_field_id(mb, db_id):
-    """Return the Metabase field ID for netrefer_stats.affiliate_name.
-
-    Tries three endpoints in order so it works across Metabase versions.
-    """
+def find_field_id(mb, db_id, table_name, field_name):
+    """Return the Metabase field ID for table.field, trying three endpoints."""
     # 1. /api/database/{id}/fields  (flat list, older versions)
     try:
         fields = mb.get(f"/api/database/{db_id}/fields")
         for f in fields:
-            if (f.get("table_name", "").lower() == "netrefer_stats"
-                    and f.get("name", "").lower() == "affiliate_name"):
-                print(f"  affiliate_name field id={f['id']} (via /database/fields)")
+            if (f.get("table_name", "").lower() == table_name
+                    and f.get("name", "").lower() == field_name):
+                print(f"  {table_name}.{field_name} field id={f['id']} (via /database/fields)")
                 return f["id"]
     except Exception:
         pass
@@ -80,10 +77,10 @@ def find_affiliate_field_id(mb, db_id):
     try:
         meta = mb.get(f"/api/database/{db_id}/metadata")
         for table in meta.get("tables", []):
-            if table["name"].lower() == "netrefer_stats":
+            if table["name"].lower() == table_name:
                 for field in table.get("fields", []):
-                    if field["name"].lower() == "affiliate_name":
-                        print(f"  affiliate_name field id={field['id']} (via /database/metadata)")
+                    if field["name"].lower() == field_name:
+                        print(f"  {table_name}.{field_name} field id={field['id']} (via /database/metadata)")
                         return field["id"]
     except Exception:
         pass
@@ -92,17 +89,17 @@ def find_affiliate_field_id(mb, db_id):
     try:
         tables = mb.get("/api/table")
         for t in tables:
-            if t["name"].lower() == "netrefer_stats" and t.get("db_id") == db_id:
+            if t["name"].lower() == table_name and t.get("db_id") == db_id:
                 tmeta = mb.get(f"/api/table/{t['id']}/query_metadata")
                 for field in tmeta.get("fields", []):
-                    if field["name"].lower() == "affiliate_name":
-                        print(f"  affiliate_name field id={field['id']} (via /table/query_metadata)")
+                    if field["name"].lower() == field_name:
+                        print(f"  {table_name}.{field_name} field id={field['id']} (via /table/query_metadata)")
                         return field["id"]
     except Exception:
         pass
 
     raise RuntimeError(
-        "Could not find field 'affiliate_name' in table 'netrefer_stats'.\n"
+        f"Could not find field '{field_name}' in table '{table_name}'.\n"
         "Run Admin → Databases → Sync database schema now, then retry."
     )
 
@@ -126,14 +123,13 @@ def existing_dashboards(mb):
 # Parameter IDs (fixed so re-runs are stable)
 # ──────────────────────────────────────────────
 PARAM_AFFILIATE = "a1b2c3d4-0001-0001-0001-000000000001"
-PARAM_START     = "a1b2c3d4-0002-0002-0002-000000000002"
-PARAM_END       = "a1b2c3d4-0003-0003-0003-000000000003"
+PARAM_DATE      = "a1b2c3d4-0002-0002-0002-000000000002"
 
 
-def template_tags(affiliate_field_id):
+def template_tags(affiliate_field_id, report_date_field_id):
     """
-    affiliate_name uses a field filter (dimension) so Metabase auto-loads
-    the dropdown from the mapped DB column.
+    affiliate_name  – field filter → auto-dropdown
+    report_date     – field filter → date/all-options (Yesterday, Last 7 days, …)
     """
     return {
         "affiliate_name": {
@@ -145,41 +141,30 @@ def template_tags(affiliate_field_id):
             "widget-type":  "string/=",
             "required":     False,
         },
-        "start_date": {
-            "id":           "tt-start",
-            "name":         "start_date",
-            "display-name": "Start Date",
-            "type":         "date",
-            "required":     False,
-        },
-        "end_date": {
-            "id":           "tt-end",
-            "name":         "end_date",
-            "display-name": "End Date",
-            "type":         "date",
+        "report_date": {
+            "id":           "tt-date",
+            "name":         "report_date",
+            "display-name": "Date",
+            "type":         "dimension",
+            "dimension":    ["field", report_date_field_id, {"temporal-unit": "day"}],
+            "widget-type":  "date/all-options",
             "required":     False,
         },
     }
 
 
 def param_mappings(card_id):
-    """Standard parameter→template-tag mappings for every card."""
+    """Standard parameter→template-tag mappings for every filterable card."""
     return [
         {
             "parameter_id": PARAM_AFFILIATE,
             "card_id":      card_id,
-            # dimension target is required for field-filter template tags
             "target":       ["dimension", ["template-tag", "affiliate_name"]],
         },
         {
-            "parameter_id": PARAM_START,
+            "parameter_id": PARAM_DATE,
             "card_id":      card_id,
-            "target":       ["variable", ["template-tag", "start_date"]],
-        },
-        {
-            "parameter_id": PARAM_END,
-            "card_id":      card_id,
-            "target":       ["variable", ["template-tag", "end_date"]],
+            "target":       ["dimension", ["template-tag", "report_date"]],
         },
     ]
 
@@ -188,30 +173,45 @@ def param_mappings(card_id):
 # Card definitions
 # ──────────────────────────────────────────────
 
-def native(db_id, sql, affiliate_field_id):
+def native(db_id, sql, affiliate_field_id, report_date_field_id):
     return {
         "type":     "native",
         "database": db_id,
         "native":   {
             "query":         sql,
-            "template-tags": template_tags(affiliate_field_id),
+            "template-tags": template_tags(affiliate_field_id, report_date_field_id),
         },
     }
 
 
-# Field filter replaces the whole condition: [[AND {{affiliate_name}}]]
-# Metabase renders it as  AND affiliate_name = 'value'  when a value is chosen.
+def native_fixed(db_id, sql):
+    """Native query with no template tags (no dashboard filters apply)."""
+    return {
+        "type":     "native",
+        "database": db_id,
+        "native":   {
+            "query":         sql,
+            "template-tags": {},
+        },
+    }
+
+
+# Field filters replace the whole condition when a value is chosen.
+# [[AND {{affiliate_name}}]]  →  AND affiliate_name = 'value'
+# [[AND {{report_date}}]]     →  AND report_date >= '2024-01-01' AND report_date <= '2024-01-31'
 WHERE = """
     WHERE 1=1
     [[AND {{affiliate_name}}]]
-    [[AND report_date >= {{start_date}}]]
-    [[AND report_date <= {{end_date}}]]
+    [[AND {{report_date}}]]
 """
 
 
-def card_defs(db_id, affiliate_field_id):
+def card_defs(db_id, affiliate_field_id, report_date_field_id):
     def q(sql):
-        return native(db_id, sql, affiliate_field_id)
+        return native(db_id, sql, affiliate_field_id, report_date_field_id)
+
+    def q_fixed(sql):
+        return native_fixed(db_id, sql)
 
     return [
         # ── KPI scalars ──────────────────────────────────────────────────
@@ -358,29 +358,60 @@ def card_defs(db_id, affiliate_field_id):
                 "pie.metric":    "net_revenue",
             },
         },
-        # ── Daily detail table ────────────────────────────────────────────
+        # ── Top 10 affiliates – last 7 days (fixed, no dashboard filters) ─
+        {
+            "name":    "AF – Top 10 Affiliates (Last 7 Days)",
+            "display": "table",
+            "no_params": True,
+            "dataset_query": q_fixed("""
+                SELECT
+                    affiliate_name,
+                    SUM(clicks)                                     AS clicks,
+                    SUM(registrations)                              AS signups,
+                    SUM(first_depositors)                           AS ftds,
+                    ROUND(SUM(deposits),     2)                     AS deposits,
+                    ROUND(SUM(net_revenue),  2)                     AS net_revenue,
+                    ROUND(SUM(total_reward), 2)                     AS commission,
+                    CASE WHEN SUM(clicks) > 0
+                         THEN ROUND(SUM(registrations) * 100.0 / SUM(clicks), 2)
+                         ELSE 0
+                    END                                             AS click_to_reg_pct,
+                    CASE WHEN SUM(registrations) > 0
+                         THEN ROUND(SUM(first_depositors) * 100.0 / SUM(registrations), 2)
+                         ELSE 0
+                    END                                             AS reg_to_ftd_pct
+                FROM netrefer_stats
+                WHERE report_date >= CURRENT_DATE - INTERVAL '7 days'
+                GROUP BY affiliate_name
+                ORDER BY net_revenue DESC
+                LIMIT 10
+            """),
+            "visualization_settings": {},
+        },
+        # ── Daily detail table (consolidated per date, no campaign split) ─
         {
             "name":    "AF – Daily Detail Table",
             "display": "table",
             "dataset_query": q(f"""
                 SELECT
                     report_date,
-                    campaign_name,
-                    country,
-                    clicks,
-                    registrations                               AS signups,
-                    first_depositors                            AS ftds,
-                    ROUND(deposits,     2)                      AS deposits,
-                    ROUND(net_revenue,  2)                      AS net_revenue,
-                    ROUND(total_reward, 2)                      AS commission,
-                    CASE WHEN clicks > 0
-                         THEN ROUND(registrations/clicks*100, 2) ELSE 0
-                    END                                         AS click_to_reg_pct,
-                    CASE WHEN registrations > 0
-                         THEN ROUND(first_depositors/registrations*100, 2) ELSE 0
-                    END                                         AS reg_to_ftd_pct
+                    SUM(clicks)                                     AS clicks,
+                    SUM(registrations)                              AS signups,
+                    SUM(first_depositors)                           AS ftds,
+                    ROUND(SUM(deposits),     2)                     AS deposits,
+                    ROUND(SUM(net_revenue),  2)                     AS net_revenue,
+                    ROUND(SUM(total_reward), 2)                     AS commission,
+                    CASE WHEN SUM(clicks) > 0
+                         THEN ROUND(SUM(registrations) * 100.0 / SUM(clicks), 2)
+                         ELSE 0
+                    END                                             AS click_to_reg_pct,
+                    CASE WHEN SUM(registrations) > 0
+                         THEN ROUND(SUM(first_depositors) * 100.0 / SUM(registrations), 2)
+                         ELSE 0
+                    END                                             AS reg_to_ftd_pct
                 FROM netrefer_stats {WHERE}
-                ORDER BY report_date DESC, net_revenue DESC
+                GROUP BY report_date
+                ORDER BY report_date DESC
             """),
             "visualization_settings": {},
         },
@@ -392,29 +423,31 @@ def card_defs(db_id, affiliate_field_id):
 # ──────────────────────────────────────────────
 
 LAYOUT = [
-    # name,                       row, col, size_x, size_y
-    ("AF – Clicks",                  0,  0,  4, 3),
-    ("AF – Registrations",           0,  4,  4, 3),
-    ("AF – FTDs",                    0,  8,  4, 3),
-    ("AF – Net Revenue",             0, 12,  4, 3),
-    ("AF – Deposits",                0, 16,  4, 3),
-    ("AF – Total Commission",        0, 20,  4, 3),
-    ("AF – Daily Revenue Trend",     3,  0, 12, 7),
-    ("AF – Daily Conversions",       3, 12, 12, 7),
-    ("AF – Conversion Funnel",      10,  0,  8, 7),
-    ("AF – Revenue by Campaign",    10,  8,  8, 7),
-    ("AF – Revenue by Country",     10, 16,  8, 7),
-    ("AF – Daily Detail Table",     17,  0, 24, 8),
+    # name,                                    row, col, size_x, size_y
+    ("AF – Clicks",                               0,  0,  4, 3),
+    ("AF – Registrations",                        0,  4,  4, 3),
+    ("AF – FTDs",                                 0,  8,  4, 3),
+    ("AF – Net Revenue",                          0, 12,  4, 3),
+    ("AF – Deposits",                             0, 16,  4, 3),
+    ("AF – Total Commission",                     0, 20,  4, 3),
+    ("AF – Daily Revenue Trend",                  3,  0, 12, 7),
+    ("AF – Daily Conversions",                    3, 12, 12, 7),
+    ("AF – Conversion Funnel",                   10,  0,  8, 7),
+    ("AF – Revenue by Campaign",                 10,  8,  8, 7),
+    ("AF – Revenue by Country",                  10, 16,  8, 7),
+    ("AF – Top 10 Affiliates (Last 7 Days)",     17,  0, 24, 8),
+    ("AF – Daily Detail Table",                  25,  0, 24, 8),
 ]
 
 
-def build_dashcards(card_name_to_id):
+def build_dashcards(card_name_to_id, card_no_params):
     dashcards = []
     for idx, (name, row, col, size_x, size_y) in enumerate(LAYOUT):
         card_id = card_name_to_id.get(name)
         if card_id is None:
             print(f"  [warn] card '{name}' not found, skipping")
             continue
+        mappings = [] if name in card_no_params else param_mappings(card_id)
         dashcards.append({
             "id":                      -(idx + 1),
             "card_id":                  card_id,
@@ -422,7 +455,7 @@ def build_dashcards(card_name_to_id):
             "col":                      col,
             "size_x":                   size_x,
             "size_y":                   size_y,
-            "parameter_mappings":       param_mappings(card_id),
+            "parameter_mappings":       mappings,
             "visualization_settings":   {},
         })
     return dashcards
@@ -447,16 +480,20 @@ def main():
     db_id = find_database(mb, args.db_name)
     print(f"  Database id={db_id}")
 
-    # Look up the affiliate_name field so we can use a field-filter template tag
-    affiliate_field_id = find_affiliate_field_id(mb, db_id)
+    # Look up field IDs for template-tag field filters
+    affiliate_field_id   = find_field_id(mb, db_id, "netrefer_stats", "affiliate_name")
+    report_date_field_id = find_field_id(mb, db_id, "netrefer_stats", "report_date")
     configure_field_for_dropdown(mb, affiliate_field_id)
 
     # Upsert all cards (always PUT existing ones so SQL + template-tags stay current)
     existing = existing_cards(mb)
     card_name_to_id = {}
+    card_no_params  = set()
     print(f"\nUpserting cards …")
-    for card in card_defs(db_id, affiliate_field_id):
+    for card in card_defs(db_id, affiliate_field_id, report_date_field_id):
         name = card["name"]
+        if card.get("no_params"):
+            card_no_params.add(name)
         payload = {
             "name":                   name,
             "display":                card["display"],
@@ -473,7 +510,7 @@ def main():
             card_name_to_id[name] = result["id"]
             print(f"  [created] {name} (id={result['id']})")
 
-    # Dashboard parameters – string/= on a field filter gives the auto-dropdown
+    # Dashboard parameters
     dashboard_params = [
         {
             "id":   PARAM_AFFILIATE,
@@ -482,16 +519,10 @@ def main():
             "type": "string/=",
         },
         {
-            "id":   PARAM_START,
-            "name": "Start Date",
-            "slug": "start_date",
-            "type": "date/single",
-        },
-        {
-            "id":   PARAM_END,
-            "name": "End Date",
-            "slug": "end_date",
-            "type": "date/single",
+            "id":   PARAM_DATE,
+            "name": "Date",
+            "slug": "report_date",
+            "type": "date/all-options",
         },
     ]
 
@@ -512,7 +543,7 @@ def main():
         print(f"\n[created] Dashboard '{dash_name}' (id={dash_id})")
 
     # Always update cards + parameters (idempotent)
-    dashcards = build_dashcards(card_name_to_id)
+    dashcards = build_dashcards(card_name_to_id, card_no_params)
     print("  Updating dashboard …")
     mb.put(f"/api/dashboard/{dash_id}", json={
         "parameters": dashboard_params,
