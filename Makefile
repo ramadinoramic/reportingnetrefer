@@ -1,4 +1,4 @@
-.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard
+.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard migrate-key
 
 PYTHON := $(shell command -v python3 || command -v python)
 
@@ -52,3 +52,19 @@ board-dashboard:
 		--user $(USER) \
 		--password $(PASSWORD) \
 		$(if $(DB_NAME),--db-name $(DB_NAME),)
+
+# Create / update the Affiliate Deep Dive dashboard in Metabase
+# Usage: make affiliate-dashboard USER=admin@example.com PASSWORD=secret
+affiliate-dashboard:
+	$(PYTHON) scripts/setup_affiliate_dashboard.py \
+		--host $(or $(HOST),http://localhost:3000) \
+		--user $(USER) \
+		--password $(PASSWORD) \
+		$(if $(DB_NAME),--db-name $(DB_NAME),)
+
+# Run the unique-key migration on an existing database
+# Usage: make migrate-key
+migrate-key:
+	docker compose exec db mysql \
+		-u $$MYSQL_USER -p$$MYSQL_PASSWORD $$MYSQL_DATABASE \
+		< sql/migrate_unique_key.sql

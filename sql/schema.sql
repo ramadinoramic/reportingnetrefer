@@ -11,7 +11,7 @@ USE netrefer_reporting;
 
 -- ------------------------------------------------------------
 -- Core stats table
--- Grain: one row per (report_date, affiliate_id)
+-- Grain: one row per (report_date, affiliate_id, campaign_name)
 -- report_date is supplied via --date when running the ETL
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS netrefer_stats (
@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS netrefer_stats (
                                                 ON UPDATE CURRENT_TIMESTAMP,
 
     PRIMARY KEY (id),
-    UNIQUE KEY uq_grain         (report_date, affiliate_id),
+    UNIQUE KEY uq_grain         (report_date, affiliate_id, campaign_name(100)),
     INDEX idx_report_date       (report_date),
     INDEX idx_affiliate_id      (affiliate_id),
     INDEX idx_country           (country),

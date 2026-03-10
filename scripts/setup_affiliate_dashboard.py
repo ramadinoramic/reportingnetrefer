@@ -153,18 +153,16 @@ def existing_dashboards(mb):
 # Parameter IDs (fixed so re-runs are stable)
 # ──────────────────────────────────────────────
 PARAM_AFFILIATE  = "a1b2c3d4-0001-0001-0001-000000000001"
-PARAM_START_DATE = "a1b2c3d4-0002-0002-0002-000000000002"
-PARAM_END_DATE   = "a1b2c3d4-0003-0003-0003-000000000003"
+PARAM_DATE_RANGE = "a1b2c3d4-0004-0004-0004-000000000004"
 
 
-def template_tags(affiliate_field_id):
+def template_tags(affiliate_field_id, date_field_id):
     """
     affiliate_name – field filter → auto-dropdown
-    start_date     – date variable → 'From Date' single-date picker
-    end_date       – date variable → 'To Date'   single-date picker
-
-    Using plain "date" type vars (not dimension/field-filter) means
-    filtering works regardless of whether the DB column is DATE or TEXT.
+    date_range     – date field filter → date/all-options picker (last 7 days,
+                     last month, custom range, etc.)  Works reliably because
+                     Metabase handles the SQL injection natively for dimension
+                     type filters.
     """
     return {
         "affiliate_name": {
@@ -176,18 +174,13 @@ def template_tags(affiliate_field_id):
             "widget-type":  "string/=",
             "required":     False,
         },
-        "start_date": {
-            "id":           "tt-start-date",
-            "name":         "start_date",
-            "display-name": "From Date",
-            "type":         "date",
-            "required":     False,
-        },
-        "end_date": {
-            "id":           "tt-end-date",
-            "name":         "end_date",
-            "display-name": "To Date",
-            "type":         "date",
+        "date_range": {
+            "id":           "tt-date-range",
+            "name":         "date_range",
+            "display-name": "Date Range",
+            "type":         "dimension",
+            "dimension":    ["field", date_field_id, None],
+            "widget-type":  "date/all-options",
             "required":     False,
         },
     }
@@ -199,19 +192,12 @@ def param_mappings(card_id):
         {
             "parameter_id": PARAM_AFFILIATE,
             "card_id":      card_id,
-            # dimension tag → use "dimension" target
             "target":       ["dimension", ["template-tag", "affiliate_name"]],
         },
         {
-            "parameter_id": PARAM_START_DATE,
+            "parameter_id": PARAM_DATE_RANGE,
             "card_id":      card_id,
-            # plain variable tag → use "variable" target
-            "target":       ["variable", ["template-tag", "start_date"]],
-        },
-        {
-            "parameter_id": PARAM_END_DATE,
-            "card_id":      card_id,
-            "target":       ["variable", ["template-tag", "end_date"]],
+            "target":       ["dimension", ["template-tag", "date_range"]],
         },
     ]
 
@@ -220,13 +206,13 @@ def param_mappings(card_id):
 # Card definitions
 # ──────────────────────────────────────────────
 
-def native(db_id, sql, affiliate_field_id):
+def native(db_id, sql, affiliate_field_id, date_field_id):
     return {
         "type":     "native",
         "database": db_id,
         "native":   {
             "query":         sql,
-            "template-tags": template_tags(affiliate_field_id),
+            "template-tags": template_tags(affiliate_field_id, date_field_id),
         },
     }
 
@@ -244,21 +230,19 @@ def native_fixed(db_id, sql):
 
 
 # How the optional filters are injected:
-#   [[AND {{affiliate_name}}]]              → AND affiliate_name = 'value'   (field filter)
-#   [[AND report_date >= {{start_date}}]]   → AND report_date >= '2024-01-01' (date var)
-#   [[AND report_date <= {{end_date}}]]     → AND report_date <= '2024-01-31' (date var)
+#   [[AND {{affiliate_name}}]]   → AND affiliate_name = 'value'  (field filter)
+#   [[AND {{date_range}}]]       → AND report_date BETWEEN ... AND ...  (date field filter)
 # When no value is selected the whole [[...]] block is dropped automatically.
 WHERE = """
     WHERE 1=1
     [[AND {{affiliate_name}}]]
-    [[AND report_date >= {{start_date}}]]
-    [[AND report_date <= {{end_date}}]]
+    [[AND {{date_range}}]]
 """
 
 
-def card_defs(db_id, affiliate_field_id, engine="postgres"):
+def card_defs(db_id, affiliate_field_id, date_field_id, engine="postgres"):
     def q(sql):
-        return native(db_id, sql, affiliate_field_id)
+        return native(db_id, sql, affiliate_field_id, date_field_id)
 
     def q_fixed(sql):
         return native_fixed(db_id, sql)
@@ -488,8 +472,8 @@ LAYOUT = [
     ("AF – Conversion Funnel",                   10,  0,  8, 7),
     ("AF – Revenue by Campaign",                 10,  8,  8, 7),
     ("AF – Revenue by Country",                  10, 16,  8, 7),
-    ("AF – Top 10 Affiliates (Last 7 Days)",     17,  0, 24, 8),
-    ("AF – Daily Detail Table",                  25,  0, 24, 8),
+    ("AF – Daily Detail Table",                  17,  0, 24, 8),
+    ("AF – Top 10 Affiliates (Last 7 Days)",     25,  0, 24, 8),
 ]
 
 
@@ -533,9 +517,11 @@ def main():
     db_id = find_database(mb, args.db_name)
     print(f"  Database id={db_id}")
 
-    # Look up field ID for the affiliate dropdown filter
+    # Look up field IDs for filters
     affiliate_field_id = find_field_id(mb, db_id, "netrefer_stats", "affiliate_name")
     configure_field_for_dropdown(mb, affiliate_field_id)
+    date_field_id = find_field_id(mb, db_id, "netrefer_stats", "report_date")
+    configure_date_field(mb, date_field_id)
     engine = db_engine(mb, db_id)
     seven_days_sql = last_7_days_expr(engine)
     print(f"  DB engine: {engine}  →  last-7-days expr: {seven_days_sql}")
@@ -545,7 +531,7 @@ def main():
     card_name_to_id = {}
     card_no_params  = set()
     print(f"\nUpserting cards …")
-    for card in card_defs(db_id, affiliate_field_id, engine):
+    for card in card_defs(db_id, affiliate_field_id, date_field_id, engine):
         name = card["name"]
         if card.get("no_params"):
             card_no_params.add(name)
@@ -574,16 +560,10 @@ def main():
             "type": "string/=",
         },
         {
-            "id":   PARAM_START_DATE,
-            "name": "From Date",
-            "slug": "start_date",
-            "type": "date/single",
-        },
-        {
-            "id":   PARAM_END_DATE,
-            "name": "To Date",
-            "slug": "end_date",
-            "type": "date/single",
+            "id":   PARAM_DATE_RANGE,
+            "name": "Date Range",
+            "slug": "date_range",
+            "type": "date/all-options",
         },
     ]
 
