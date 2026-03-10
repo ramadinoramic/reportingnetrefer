@@ -450,7 +450,6 @@ def card_defs(db_id, affiliate_field_id, engine="postgres"):
                     SUM(first_depositors)                           AS ftds,
                     ROUND(SUM(deposits),     2)                     AS deposits,
                     ROUND(SUM(net_revenue),  2)                     AS net_revenue,
-                    ROUND(SUM(total_reward), 2)                     AS commission,
                     CASE WHEN SUM(clicks) > 0
                          THEN ROUND(SUM(registrations) * 100.0 / SUM(clicks), 2)
                          ELSE 0
