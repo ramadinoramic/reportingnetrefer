@@ -301,15 +301,6 @@ def card_defs(db_id, affiliate_field_id, engine="postgres"):
             "visualization_settings": {"number.style": "currency", "currency": "EUR"},
         },
         {
-            "name":    "AF – Total Commission",
-            "display": "scalar",
-            "dataset_query": q(f"""
-                SELECT ROUND(SUM(total_reward), 2) AS commission
-                FROM netrefer_stats {WHERE}
-            """),
-            "visualization_settings": {"number.style": "currency", "currency": "EUR"},
-        },
-        {
             "name":    "AF – Deposits",
             "display": "scalar",
             "dataset_query": q(f"""
@@ -420,7 +411,6 @@ def card_defs(db_id, affiliate_field_id, engine="postgres"):
                     SUM(first_depositors)                           AS ftds,
                     ROUND(SUM(deposits),     2)                     AS deposits,
                     ROUND(SUM(net_revenue),  2)                     AS net_revenue,
-                    ROUND(SUM(total_reward), 2)                     AS commission,
                     CASE WHEN SUM(clicks) > 0
                          THEN ROUND(SUM(registrations) * 100.0 / SUM(clicks), 2)
                          ELSE 0
@@ -478,7 +468,6 @@ LAYOUT = [
     ("AF – FTDs",                                 0,  8,  4, 3),
     ("AF – Net Revenue",                          0, 12,  4, 3),
     ("AF – Deposits",                             0, 16,  4, 3),
-    ("AF – Total Commission",                     0, 20,  4, 3),
     ("AF – Daily Revenue Trend",                  3,  0, 12, 7),
     ("AF – Daily Conversions",                    3, 12, 12, 7),
     ("AF – Conversion Funnel",                   10,  0,  8, 7),
