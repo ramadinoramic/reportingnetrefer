@@ -1,4 +1,4 @@
-.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard migrate-key
+.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard migrate-key audit-csv
 
 PYTHON := $(shell command -v python3 || command -v python)
 
@@ -68,3 +68,8 @@ migrate-key:
 	docker compose exec db mysql \
 		-u $$MYSQL_USER -p$$MYSQL_PASSWORD $$MYSQL_DATABASE \
 		< sql/migrate_unique_key.sql
+
+# Audit a CSV file: check row counts, column mapping, and UPSERT collisions
+# Usage: make audit-csv FILE=drop/netrefer_2026-03-09.csv
+audit-csv:
+	$(PYTHON) scripts/audit_csv.py --file $(FILE)
