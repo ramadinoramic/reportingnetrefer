@@ -1,4 +1,4 @@
-.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard migrate-key audit-csv
+.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard etl-dashboard migrate-key migrate-etl audit-csv watch etl-docker
 
 PYTHON := $(shell command -v python3 || command -v python)
 
@@ -42,7 +42,8 @@ board-report:
 		$(if $(MONTH),--month $(MONTH),) \
 		$(if $(FROM),--from $(FROM),) \
 		$(if $(TO),--to $(TO),) \
-		$(if $(OUTPUT),--output $(OUTPUT),)
+		$(if $(OUTPUT),--output $(OUTPUT),) \
+		$(if $(EMAIL),--email $(EMAIL),)
 
 # Create / update the Board Report dashboard in Metabase
 # Usage: make board-dashboard USER=admin@example.com PASSWORD=secret
@@ -68,6 +69,37 @@ migrate-key:
 	docker compose exec db mysql \
 		-u $$MYSQL_USER -p$$MYSQL_PASSWORD $$MYSQL_DATABASE \
 		< sql/migrate_unique_key.sql
+
+# Create / update the ETL Health dashboard in Metabase
+# Usage: make etl-dashboard USER=admin@example.com PASSWORD=secret
+etl-dashboard:
+	$(PYTHON) scripts/setup_etl_dashboard.py \
+		--host $(or $(HOST),http://localhost:3000) \
+		--user $(USER) \
+		--password $(PASSWORD) \
+		$(if $(DB_NAME),--db-name $(DB_NAME),)
+
+# Run the etl_runs schema migration (adds rows_parsed + warnings columns)
+# Usage: make migrate-etl
+migrate-etl:
+	docker compose exec db mysql \
+		-u $$MYSQL_USER -p$$MYSQL_PASSWORD $$MYSQL_DATABASE \
+		< sql/migrate_etl_runs.sql
+
+# Watch drop/ folder and auto-load new CSVs (runs forever, Ctrl-C to stop)
+# Usage: make watch
+watch:
+	$(PYTHON) etl/watcher.py
+
+# Process whatever is in drop/ right now and exit
+# Usage: make watch-once
+watch-once:
+	$(PYTHON) etl/watcher.py --once
+
+# Build the Docker image for the ETL runner
+# Usage: make etl-docker
+etl-docker:
+	docker build -f Dockerfile.etl -t netrefer-etl .
 
 # Audit a CSV file: check row counts, column mapping, and UPSERT collisions
 # Usage: make audit-csv FILE=drop/netrefer_2026-03-09.csv

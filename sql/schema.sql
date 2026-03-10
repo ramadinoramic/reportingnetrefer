@@ -170,8 +170,12 @@ CREATE TABLE IF NOT EXISTS etl_runs (
     mode            ENUM('api','csv')                    NOT NULL,
     source_detail   TEXT                                 NULL,
     rows_upserted   INT UNSIGNED                         NOT NULL DEFAULT 0,
+    rows_parsed     INT UNSIGNED                         NOT NULL DEFAULT 0
+                        COMMENT 'Rows parsed from CSV (before UPSERT de-dup)',
     status          ENUM('running','success','failed')   NOT NULL DEFAULT 'running',
     error_message   TEXT                                 NULL,
+    warnings        TEXT                                 NULL
+                        COMMENT 'Semicolon-separated DQ warnings for this run',
     PRIMARY KEY (run_id),
     INDEX idx_started_at (started_at),
     INDEX idx_status     (status)

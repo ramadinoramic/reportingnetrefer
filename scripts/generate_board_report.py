@@ -25,8 +25,11 @@ Add to Makefile:
 
 import argparse
 import os
+import smtplib
 import sys
 from datetime import date, datetime, timedelta
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -719,6 +722,9 @@ def main():
                         help="End date of custom range (required with --from)")
     parser.add_argument("--output", "-o", metavar="FILE",
                         help="Output HTML file path (default: reports/board_report_<period>.html)")
+    parser.add_argument("--email", metavar="ADDRESS[,ADDRESS]",
+                        help="Comma-separated recipient addresses — sends report via SMTP "
+                             "(configure SMTP_HOST/USER/PASSWORD/PORT in .env)")
     args = parser.parse_args()
 
     # ── Resolve period ───────────────────────────────────────────────────────
@@ -780,6 +786,53 @@ def main():
     out_path.write_text(html, encoding="utf-8")
     print(f"Report saved → {out_path}")
     print(f"Open in your browser and use File → Print → Save as PDF to export.")
+
+    # ── Optional email delivery ───────────────────────────────────────────
+    if args.email:
+        send_report_email(html, period_label, args.email.split(","))
+
+
+def send_report_email(html: str, period_label: str, recipients: List[str]):
+    """
+    Send the board report HTML via email using SMTP settings from .env.
+
+    Required env vars:
+        SMTP_HOST      — e.g. smtp.gmail.com
+        SMTP_PORT      — e.g. 587
+        SMTP_USER      — sender address
+        SMTP_PASSWORD  — sender password / app password
+    Optional:
+        SMTP_FROM      — display name + address, defaults to SMTP_USER
+    """
+    host     = os.environ.get("SMTP_HOST")
+    port     = int(os.environ.get("SMTP_PORT", 587))
+    user     = os.environ.get("SMTP_USER")
+    password = os.environ.get("SMTP_PASSWORD")
+    sender   = os.environ.get("SMTP_FROM", user)
+
+    if not all([host, user, password]):
+        print(
+            "ERROR: email requested but SMTP_HOST / SMTP_USER / SMTP_PASSWORD "
+            "are not set in .env — skipping email delivery.",
+            file=sys.stderr,
+        )
+        return
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"Affiliate Board Report — {period_label}"
+    msg["From"]    = sender
+    msg["To"]      = ", ".join(recipients)
+    msg.attach(MIMEText(html, "html", "utf-8"))
+
+    try:
+        with smtplib.SMTP(host, port) as smtp:
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.login(user, password)
+            smtp.sendmail(sender, recipients, msg.as_string())
+        print(f"Email sent to: {', '.join(recipients)}")
+    except Exception as exc:
+        print(f"ERROR: failed to send email — {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":

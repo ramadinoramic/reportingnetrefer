@@ -62,6 +62,28 @@ def db_connection():
 
 
 # ---------------------------------------------------------------------------
+# Parse-failure tracking
+# ---------------------------------------------------------------------------
+class _ParseFailures:
+    """Counts coerce-to-zero events per column so they surface as warnings."""
+    def __init__(self):
+        self._counts: Dict[str, int] = {}
+
+    def bump(self, col: str):
+        self._counts[col] = self._counts.get(col, 0) + 1
+
+    @property
+    def total(self) -> int:
+        return sum(self._counts.values())
+
+    def summary(self) -> Optional[str]:
+        if not self._counts:
+            return None
+        parts = [f"{col}({n})" for col, n in sorted(self._counts.items())]
+        return "parse_failures: " + ", ".join(parts)
+
+
+# ---------------------------------------------------------------------------
 # CSV parser — handles Netrefer's quirky format
 # ---------------------------------------------------------------------------
 DATE_FORMATS = ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y")
@@ -78,7 +100,7 @@ def _parse_date(raw: str) -> Optional[date]:
     return None
 
 
-def _to_decimal(value: str) -> str:
+def _to_decimal(value: str, col: str = "", pf: Optional[_ParseFailures] = None) -> str:
     """Clean a currency/numeric string for MySQL DECIMAL insertion."""
     if not value:
         return "0"
@@ -87,15 +109,19 @@ def _to_decimal(value: str) -> str:
         float(cleaned)
         return cleaned
     except ValueError:
+        if pf and col:
+            pf.bump(col)
         return "0"
 
 
-def _to_int(value: str) -> int:
+def _to_int(value: str, col: str = "", pf: Optional[_ParseFailures] = None) -> int:
     if not value:
         return 0
     try:
         return int(float(value.replace(",", "").strip()))
     except (ValueError, TypeError):
+        if pf and col:
+            pf.bump(col)
         return 0
 
 
@@ -181,7 +207,7 @@ STR_COLS = {
 }
 
 
-def transform(rows: List[Dict]) -> List[Dict]:
+def transform(rows: List[Dict], pf: Optional[_ParseFailures] = None) -> List[Dict]:
     result = []
     for row in rows:
         rec = {"report_date": row["report_date"],
@@ -189,11 +215,105 @@ def transform(rows: List[Dict]) -> List[Dict]:
         for col in STR_COLS:
             rec[col] = row.get(col, "")
         for col in INT_COLS:
-            rec[col] = _to_int(row.get(col, "0"))
+            rec[col] = _to_int(row.get(col, "0"), col, pf)
         for col in DECIMAL_COLS:
-            rec[col] = _to_decimal(row.get(col, "0"))
+            rec[col] = _to_decimal(row.get(col, "0"), col, pf)
         result.append(rec)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Data quality validation
+# ---------------------------------------------------------------------------
+
+def validate_rows(records: List[Dict]) -> List[str]:
+    """Structural sanity checks on parsed records. Returns warning strings."""
+    warns: List[str] = []
+
+    if not records:
+        warns.append("ZERO_ROWS: CSV produced no loadable rows (totals/blanks only)")
+        return warns
+
+    total_clicks = sum(r.get("clicks", 0) for r in records)
+    total_ftds   = sum(r.get("first_depositors", 0) for r in records)
+    total_nr     = sum(float(r.get("net_revenue", 0)) for r in records)
+
+    if total_clicks == 0 and total_ftds == 0 and total_nr == 0:
+        warns.append(
+            "ALL_ZEROS: clicks, first_depositors, and net_revenue are all 0 "
+            "— possible empty or corrupt export"
+        )
+
+    bad_ftd = sum(
+        1 for r in records
+        if r.get("first_depositors", 0) > r.get("registrations", 0)
+    )
+    if bad_ftd:
+        warns.append(f"FTD_GT_REG: {bad_ftd} row(s) have first_depositors > registrations")
+
+    return warns
+
+
+def check_outliers(conn, report_date: date) -> List[str]:
+    """
+    Compare today's aggregates to the 14-day rolling average.
+    Returns a list of warning strings (empty = clean).
+    """
+    warns: List[str] = []
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT AVG(d_ftds), AVG(d_clicks), AVG(d_nr)
+            FROM (
+                SELECT
+                    report_date,
+                    SUM(first_depositors) AS d_ftds,
+                    SUM(clicks)           AS d_clicks,
+                    SUM(net_revenue)      AS d_nr
+                FROM netrefer_stats
+                WHERE report_date < %s
+                  AND report_date >= %s - INTERVAL 14 DAY
+                GROUP BY report_date
+            ) _daily
+        """, (report_date, report_date))
+        row = cursor.fetchone()
+        if not row or row[0] is None:
+            return warns  # not enough history yet
+
+        avg_ftds, avg_clicks, avg_nr = (float(x) if x else 0.0 for x in row)
+
+        cursor.execute("""
+            SELECT SUM(first_depositors), SUM(clicks), SUM(net_revenue)
+            FROM netrefer_stats WHERE report_date = %s
+        """, (report_date,))
+        today = cursor.fetchone()
+        if not today or today[0] is None:
+            return warns
+
+        today_ftds, today_clicks, today_nr = (float(x) if x else 0.0 for x in today)
+
+        for metric, t_val, a_val in [
+            ("FTDs",        today_ftds,   avg_ftds),
+            ("clicks",      today_clicks, avg_clicks),
+            ("net_revenue", today_nr,     avg_nr),
+        ]:
+            if a_val <= 0:
+                continue
+            ratio = t_val / a_val
+            if ratio > 5.0:
+                warns.append(
+                    f"OUTLIER_HIGH {metric}: {ratio:.1f}x 14-day avg "
+                    f"(today={t_val:.0f}, avg={a_val:.0f})"
+                )
+            elif ratio < 0.2 and t_val >= 0:
+                warns.append(
+                    f"OUTLIER_LOW {metric}: {ratio:.2f}x 14-day avg "
+                    f"(today={t_val:.0f}, avg={a_val:.0f})"
+                )
+    finally:
+        cursor.close()
+
+    return warns
 
 
 # ---------------------------------------------------------------------------
@@ -268,19 +388,34 @@ ON DUPLICATE KEY UPDATE
     updated_at               = CURRENT_TIMESTAMP
 """
 
-AUDIT_START = "INSERT INTO etl_runs (run_id, mode, source_detail, status) VALUES (%s, 'csv', %s, 'running')"
-AUDIT_FINISH = "UPDATE etl_runs SET finished_at=CURRENT_TIMESTAMP, rows_upserted=%s, status=%s, error_message=%s WHERE run_id=%s"
+AUDIT_START  = """
+    INSERT INTO etl_runs (run_id, mode, source_detail, status, rows_parsed)
+    VALUES (%s, 'csv', %s, 'running', 0)
+"""
+AUDIT_FINISH = """
+    UPDATE etl_runs
+    SET finished_at   = CURRENT_TIMESTAMP,
+        rows_upserted = %s,
+        rows_parsed   = %s,
+        status        = %s,
+        error_message = %s,
+        warnings      = %s
+    WHERE run_id = %s
+"""
 
 
-def load_to_mysql(records: List[Dict], source: str, batch_size: int = 500) -> int:
+def load_to_mysql(records: List[Dict], source: str,
+                  rows_parsed: int = 0,
+                  struct_warnings: Optional[List[str]] = None,
+                  batch_size: int = 500) -> int:
     if not records:
-        log.warning("No records to load")
+        log.warning("No records to load for %s", source)
         return 0
 
     run_id = str(uuid.uuid4())
-    conn = db_connection()
+    conn   = db_connection()
     cursor = conn.cursor()
-    total = 0
+    total  = 0
 
     try:
         cursor.execute(AUDIT_START, (run_id, source))
@@ -293,13 +428,24 @@ def load_to_mysql(records: List[Dict], source: str, batch_size: int = 500) -> in
             total += cursor.rowcount
             log.info("Batch %d–%d: %d rows affected", i + 1, i + len(batch), cursor.rowcount)
 
-        cursor.execute(AUDIT_FINISH, (total, "success", None, run_id))
+        # Outlier check against rolling 14-day average
+        report_date    = records[0]["report_date"] if records else None
+        outlier_warns  = check_outliers(conn, report_date) if report_date else []
+        all_warns      = (struct_warnings or []) + outlier_warns
+
+        if all_warns:
+            for w in all_warns:
+                log.warning("[DQ] %s", w)
+
+        warn_str = "; ".join(all_warns) if all_warns else None
+        cursor.execute(AUDIT_FINISH, (total, rows_parsed, "success", None, warn_str, run_id))
         conn.commit()
 
     except Exception as exc:
         conn.rollback()
         try:
-            cursor.execute(AUDIT_FINISH, (total, "failed", str(exc), run_id))
+            warn_str = "; ".join(struct_warnings) if struct_warnings else None
+            cursor.execute(AUDIT_FINISH, (total, rows_parsed, "failed", str(exc), warn_str, run_id))
             conn.commit()
         except Exception:
             pass
@@ -340,10 +486,22 @@ def _read_file(file_path: Path) -> str:
 
 def process_file(file_path: Path, report_date: date, col_map: Dict[str, str]) -> int:
     log.info("Loading: %s (date: %s)", file_path.name, report_date)
-    raw = _read_file(file_path)
-    rows = parse_csv(raw, col_map, report_date)
-    records = transform(rows)
-    count = load_to_mysql(records, source=file_path.name)
+    raw     = _read_file(file_path)
+    rows    = parse_csv(raw, col_map, report_date)
+    pf      = _ParseFailures()
+    records = transform(rows, pf)
+
+    # Collect all structural warnings before hitting the DB
+    warns = validate_rows(records)
+    if pf.summary():
+        warns.append(pf.summary())
+    if warns:
+        for w in warns:
+            log.warning("[DQ] %s  (%s)", w, file_path.name)
+
+    count = load_to_mysql(records, source=file_path.name,
+                          rows_parsed=len(rows),
+                          struct_warnings=warns)
     log.info("Done: %d rows upserted from %s", count, file_path.name)
     return count
 
@@ -391,7 +549,7 @@ def main():
     )
     args = p.parse_args()
 
-    col_map = load_column_map()
+    col_map     = load_column_map()
     report_date = date.fromisoformat(args.date) if args.date else None
 
     if args.file:
@@ -404,7 +562,7 @@ def main():
         process_file(Path(args.file), report_date, col_map)
 
     else:
-        drop_dir = Path(os.getenv("CSV_DROP_DIR", "./drop"))
+        drop_dir      = Path(os.getenv("CSV_DROP_DIR", "./drop"))
         processed_dir = Path(os.getenv("PROCESSED_DIR", str(drop_dir / "processed")))
         process_drop_dir(drop_dir, processed_dir, col_map, report_date)
 

@@ -1,0 +1,19 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy ETL source
+COPY etl/     ./etl/
+COPY scripts/ ./scripts/
+COPY sql/     ./sql/
+
+# drop/ and drop/processed/ will be mounted as a volume
+RUN mkdir -p drop/processed logs
+
+# Default: run the watcher (override with docker run ... --once or --file)
+ENTRYPOINT ["python", "etl/watcher.py"]
+CMD []
