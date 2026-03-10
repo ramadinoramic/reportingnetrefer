@@ -154,14 +154,21 @@ def existing_dashboards(mb):
 # ──────────────────────────────────────────────
 # Parameter IDs (fixed so re-runs are stable)
 # ──────────────────────────────────────────────
-PARAM_AFFILIATE = "a1b2c3d4-0001-0001-0001-000000000001"
-PARAM_DATE      = "a1b2c3d4-0002-0002-0002-000000000002"
+PARAM_AFFILIATE    = "a1b2c3d4-0001-0001-0001-000000000001"
+PARAM_DATE         = "a1b2c3d4-0002-0002-0002-000000000002"
+# Detail-table-only column threshold params
+PARAM_MIN_CLICKS   = "a1b2c3d4-0010-0010-0010-000000000010"
+PARAM_MIN_SIGNUPS  = "a1b2c3d4-0011-0011-0011-000000000011"
+PARAM_MIN_FTDS     = "a1b2c3d4-0012-0012-0012-000000000012"
+PARAM_MIN_DEPOSITS = "a1b2c3d4-0013-0013-0013-000000000013"
+PARAM_MIN_REVENUE  = "a1b2c3d4-0014-0014-0014-000000000014"
 
 
 def template_tags(affiliate_field_id, date_field_id):
     """
     Both filters are field filters (type=dimension).
     Metabase generates the WHERE SQL — no manual quoting needed.
+    Use None for the date field options — plain DATE columns don't need temporal-unit.
     """
     return {
         "affiliate_name": {
@@ -178,9 +185,35 @@ def template_tags(affiliate_field_id, date_field_id):
             "name":         "date_range",
             "display-name": "Date Range",
             "type":         "dimension",
-            "dimension":    ["field", date_field_id, {"temporal-unit": "day"}],
+            "dimension":    ["field", date_field_id, None],
             "widget-type":  "date/range",
             "required":     False,
+        },
+    }
+
+
+def detail_extra_tags():
+    """Number threshold tags used only by the Daily Detail Table card."""
+    return {
+        "min_clicks": {
+            "id": "tt-min-clicks", "name": "min_clicks",
+            "display-name": "Min Clicks", "type": "number", "required": False,
+        },
+        "min_signups": {
+            "id": "tt-min-signups", "name": "min_signups",
+            "display-name": "Min Signups", "type": "number", "required": False,
+        },
+        "min_ftds": {
+            "id": "tt-min-ftds", "name": "min_ftds",
+            "display-name": "Min FTDs", "type": "number", "required": False,
+        },
+        "min_deposits": {
+            "id": "tt-min-deposits", "name": "min_deposits",
+            "display-name": "Min Deposits", "type": "number", "required": False,
+        },
+        "min_revenue": {
+            "id": "tt-min-revenue", "name": "min_revenue",
+            "display-name": "Min Net Revenue", "type": "number", "required": False,
         },
     }
 
@@ -198,6 +231,22 @@ def param_mappings(card_id):
             "card_id":      card_id,
             "target":       ["dimension", ["template-tag", "date_range"]],
         },
+    ]
+
+
+def detail_param_mappings(card_id):
+    """Param mappings for the Daily Detail Table (all shared + column thresholds)."""
+    return param_mappings(card_id) + [
+        {"parameter_id": PARAM_MIN_CLICKS,   "card_id": card_id,
+         "target": ["variable", ["template-tag", "min_clicks"]]},
+        {"parameter_id": PARAM_MIN_SIGNUPS,  "card_id": card_id,
+         "target": ["variable", ["template-tag", "min_signups"]]},
+        {"parameter_id": PARAM_MIN_FTDS,     "card_id": card_id,
+         "target": ["variable", ["template-tag", "min_ftds"]]},
+        {"parameter_id": PARAM_MIN_DEPOSITS, "card_id": card_id,
+         "target": ["variable", ["template-tag", "min_deposits"]]},
+        {"parameter_id": PARAM_MIN_REVENUE,  "card_id": card_id,
+         "target": ["variable", ["template-tag", "min_revenue"]]},
     ]
 
 
@@ -241,6 +290,20 @@ WHERE = """
 def card_defs(db_id, affiliate_field_id, date_field_id, engine="postgres"):
     def q(sql):
         return native(db_id, sql, affiliate_field_id, date_field_id)
+
+    def q_detail(sql):
+        """Native query with affiliate + date field filters AND column threshold tags."""
+        return {
+            "type":     "native",
+            "database": db_id,
+            "native":   {
+                "query":         sql,
+                "template-tags": {
+                    **template_tags(affiliate_field_id, date_field_id),
+                    **detail_extra_tags(),
+                },
+            },
+        }
 
     def q_fixed(sql):
         return native_fixed(db_id, sql)
@@ -416,7 +479,8 @@ def card_defs(db_id, affiliate_field_id, date_field_id, engine="postgres"):
         {
             "name":    "AF – Daily Detail Table",
             "display": "table",
-            "dataset_query": q(f"""
+            "detail_params": True,
+            "dataset_query": q_detail(f"""
                 SELECT
                     report_date,
                     affiliate_name,
@@ -435,6 +499,12 @@ def card_defs(db_id, affiliate_field_id, date_field_id, engine="postgres"):
                     END                                             AS reg_to_ftd_pct
                 FROM netrefer_stats {WHERE}
                 GROUP BY report_date, affiliate_name
+                HAVING 1=1
+                    [[AND SUM(clicks)          >= {{{{min_clicks}}}}]]
+                    [[AND SUM(registrations)   >= {{{{min_signups}}}}]]
+                    [[AND SUM(first_depositors) >= {{{{min_ftds}}}}]]
+                    [[AND SUM(deposits)         >= {{{{min_deposits}}}}]]
+                    [[AND SUM(net_revenue)      >= {{{{min_revenue}}}}]]
                 ORDER BY report_date DESC, ftds DESC, net_revenue DESC
             """),
             "visualization_settings": {},
@@ -463,14 +533,19 @@ LAYOUT = [
 ]
 
 
-def build_dashcards(card_name_to_id, card_no_params):
+def build_dashcards(card_name_to_id, card_no_params, card_detail_params):
     dashcards = []
     for idx, (name, row, col, size_x, size_y) in enumerate(LAYOUT):
         card_id = card_name_to_id.get(name)
         if card_id is None:
             print(f"  [warn] card '{name}' not found, skipping")
             continue
-        mappings = [] if name in card_no_params else param_mappings(card_id)
+        if name in card_no_params:
+            mappings = []
+        elif name in card_detail_params:
+            mappings = detail_param_mappings(card_id)
+        else:
+            mappings = param_mappings(card_id)
         dashcards.append({
             "id":                      -(idx + 1),
             "card_id":                  card_id,
@@ -514,13 +589,16 @@ def main():
 
     # Upsert all cards (always PUT existing ones so SQL + template-tags stay current)
     existing = existing_cards(mb)
-    card_name_to_id = {}
-    card_no_params  = set()
+    card_name_to_id  = {}
+    card_no_params   = set()
+    card_detail_params = set()
     print(f"\nUpserting cards …")
     for card in card_defs(db_id, affiliate_field_id, date_field_id, engine):
         name = card["name"]
         if card.get("no_params"):
             card_no_params.add(name)
+        if card.get("detail_params"):
+            card_detail_params.add(name)
         payload = {
             "name":                   name,
             "display":                card["display"],
@@ -539,18 +617,13 @@ def main():
 
     # Dashboard parameters
     dashboard_params = [
-        {
-            "id":   PARAM_AFFILIATE,
-            "name": "Affiliate Name",
-            "slug": "affiliate_name",
-            "type": "string/=",
-        },
-        {
-            "id":   PARAM_DATE,
-            "name": "Date Range",
-            "slug": "date_range",
-            "type": "date/range",
-        },
+        {"id": PARAM_AFFILIATE,    "name": "Affiliate Name",   "slug": "affiliate_name",   "type": "string/="},
+        {"id": PARAM_DATE,         "name": "Date Range",       "slug": "date_range",        "type": "date/range"},
+        {"id": PARAM_MIN_CLICKS,   "name": "Min Clicks",       "slug": "min_clicks",        "type": "number"},
+        {"id": PARAM_MIN_SIGNUPS,  "name": "Min Signups",      "slug": "min_signups",       "type": "number"},
+        {"id": PARAM_MIN_FTDS,     "name": "Min FTDs",         "slug": "min_ftds",          "type": "number"},
+        {"id": PARAM_MIN_DEPOSITS, "name": "Min Deposits",     "slug": "min_deposits",      "type": "number"},
+        {"id": PARAM_MIN_REVENUE,  "name": "Min Net Revenue",  "slug": "min_revenue",       "type": "number"},
     ]
 
     # Delete the existing dashboard so stale dashcard/parameter mappings are cleared
@@ -572,7 +645,7 @@ def main():
     dash_id = dash["id"]
     print(f"\n[created] Dashboard '{dash_name}' (id={dash_id})")
 
-    dashcards = build_dashcards(card_name_to_id, card_no_params)
+    dashcards = build_dashcards(card_name_to_id, card_no_params, card_detail_params)
     print("  Wiring cards …")
     mb.put(f"/api/dashboard/{dash_id}", json={
         "parameters": dashboard_params,
