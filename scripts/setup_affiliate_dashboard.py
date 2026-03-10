@@ -3,9 +3,9 @@
 setup_affiliate_dashboard.py  –  Creates a filterable Affiliate Deep Dive dashboard.
 
 Filters:
-  • Affiliate Name  (dropdown – field filter)
-  • From Date       (date/single picker)
-  • To Date         (date/single picker)
+  • Affiliate Name  (dropdown – field filter on affiliate_name)
+  • From Date       (date/single picker  → report_date >=)
+  • To Date         (date/single picker  → report_date <=)
 
 Usage:
     python scripts/setup_affiliate_dashboard.py \
@@ -154,15 +154,18 @@ def existing_dashboards(mb):
 # ──────────────────────────────────────────────
 # Parameter IDs (fixed so re-runs are stable)
 # ──────────────────────────────────────────────
-PARAM_AFFILIATE = "a1b2c3d4-0001-0001-0001-000000000001"
-PARAM_DATE      = "a1b2c3d4-0002-0002-0002-000000000002"
+PARAM_AFFILIATE  = "a1b2c3d4-0001-0001-0001-000000000001"
+PARAM_FROM_DATE  = "a1b2c3d4-0002-0002-0002-000000000002"
+PARAM_TO_DATE    = "a1b2c3d4-0003-0003-0003-000000000003"
 
 
-def template_tags(affiliate_field_id, date_field_id):
+def template_tags(affiliate_field_id):
     """
-    Both filters are field filters (type=dimension).
-    Metabase generates the WHERE SQL — no manual quoting needed.
-    Use None for the date field options — plain DATE columns don't need temporal-unit.
+    affiliate_name  – field filter (Metabase auto-generates the equality SQL).
+    from_date / to_date – simple date variables; Metabase substitutes the
+      chosen date as a quoted 'YYYY-MM-DD' string directly into the SQL.
+      This is more reliable than a date/range field filter because it does
+      not depend on Metabase knowing the column's base_type.
     """
     return {
         "affiliate_name": {
@@ -174,13 +177,18 @@ def template_tags(affiliate_field_id, date_field_id):
             "widget-type":  "string/=",
             "required":     False,
         },
-        "date_range": {
-            "id":           "tt-date-range",
-            "name":         "date_range",
-            "display-name": "Date Range",
-            "type":         "dimension",
-            "dimension":    ["field", date_field_id, None],
-            "widget-type":  "date/range",
+        "from_date": {
+            "id":           "tt-from-date",
+            "name":         "from_date",
+            "display-name": "From Date",
+            "type":         "date",
+            "required":     False,
+        },
+        "to_date": {
+            "id":           "tt-to-date",
+            "name":         "to_date",
+            "display-name": "To Date",
+            "type":         "date",
             "required":     False,
         },
     }
@@ -195,9 +203,15 @@ def param_mappings(card_id):
             "target":       ["dimension", ["template-tag", "affiliate_name"]],
         },
         {
-            "parameter_id": PARAM_DATE,
+            # Simple (non-field-filter) variables use ["variable", ...] target
+            "parameter_id": PARAM_FROM_DATE,
             "card_id":      card_id,
-            "target":       ["dimension", ["template-tag", "date_range"]],
+            "target":       ["variable", ["template-tag", "from_date"]],
+        },
+        {
+            "parameter_id": PARAM_TO_DATE,
+            "card_id":      card_id,
+            "target":       ["variable", ["template-tag", "to_date"]],
         },
     ]
 
@@ -206,13 +220,13 @@ def param_mappings(card_id):
 # Card definitions
 # ──────────────────────────────────────────────
 
-def native(db_id, sql, affiliate_field_id, date_field_id):
+def native(db_id, sql, affiliate_field_id):
     return {
         "type":     "native",
         "database": db_id,
         "native":   {
             "query":         sql,
-            "template-tags": template_tags(affiliate_field_id, date_field_id),
+            "template-tags": template_tags(affiliate_field_id),
         },
     }
 
@@ -229,19 +243,18 @@ def native_fixed(db_id, sql):
     }
 
 
-# Both filters are field filters — Metabase generates the SQL automatically.
-# [[AND {{affiliate_name}}]] → dropped when no affiliate selected
-# [[AND {{date_range}}]]     → dropped when no date range selected; when set,
-#                              Metabase emits e.g. AND report_date BETWEEN ... AND ...
+# affiliate_name is a field filter  → [[AND {{affiliate_name}}]] is dropped when not set
+# from_date / to_date are date vars → Metabase substitutes 'YYYY-MM-DD' directly
 WHERE = """
     WHERE 1=1
     [[AND {{affiliate_name}}]]
-    [[AND {{date_range}}]]
+    [[AND report_date >= {{from_date}}]]
+    [[AND report_date <= {{to_date}}]]
 """
 
-def card_defs(db_id, affiliate_field_id, date_field_id, engine="postgres"):
+def card_defs(db_id, affiliate_field_id, engine="postgres"):
     def q(sql):
-        return native(db_id, sql, affiliate_field_id, date_field_id)
+        return native(db_id, sql, affiliate_field_id)
 
     def q_fixed(sql):
         return native_fixed(db_id, sql)
@@ -507,8 +520,6 @@ def main():
     # Look up field IDs for filters
     affiliate_field_id = find_field_id(mb, db_id, "netrefer_stats", "affiliate_name")
     configure_field_for_dropdown(mb, affiliate_field_id)
-    date_field_id = find_field_id(mb, db_id, "netrefer_stats", "report_date")
-    configure_date_field(mb, date_field_id)
     engine = db_engine(mb, db_id)
     seven_days_sql = last_7_days_expr(engine)
     print(f"  DB engine: {engine}  →  last-7-days expr: {seven_days_sql}")
@@ -519,7 +530,7 @@ def main():
     card_no_params   = set()
     card_detail_params = set()
     print(f"\nUpserting cards …")
-    for card in card_defs(db_id, affiliate_field_id, date_field_id, engine):
+    for card in card_defs(db_id, affiliate_field_id, engine):
         name = card["name"]
         if card.get("no_params"):
             card_no_params.add(name)
@@ -543,8 +554,9 @@ def main():
 
     # Dashboard parameters
     dashboard_params = [
-        {"id": PARAM_AFFILIATE, "name": "Affiliate Name", "slug": "affiliate_name", "type": "string/="},
-        {"id": PARAM_DATE,      "name": "Date Range",     "slug": "date_range",     "type": "date/range"},
+        {"id": PARAM_AFFILIATE,  "name": "Affiliate Name", "slug": "affiliate_name", "type": "string/="},
+        {"id": PARAM_FROM_DATE,  "name": "From Date",      "slug": "from_date",      "type": "date/single"},
+        {"id": PARAM_TO_DATE,    "name": "To Date",        "slug": "to_date",        "type": "date/single"},
     ]
 
     # Delete the existing dashboard so stale dashcard/parameter mappings are cleared
