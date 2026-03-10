@@ -426,13 +426,12 @@ def card_defs(db_id, affiliate_field_id, engine="postgres"):
             """),
             "visualization_settings": {},
         },
-        # ── Daily detail table (consolidated per affiliate+date) ─────────
+        # ── Detail table – one row per affiliate, totals across the date range ──
         {
             "name":    "AF – Daily Detail Table",
             "display": "table",
             "dataset_query": q(f"""
                 SELECT
-                    report_date,
                     affiliate_name,
                     SUM(clicks)                                     AS clicks,
                     SUM(registrations)                              AS signups,
@@ -448,8 +447,8 @@ def card_defs(db_id, affiliate_field_id, engine="postgres"):
                          ELSE 0
                     END                                             AS reg_to_ftd_pct
                 FROM netrefer_stats {WHERE}
-                GROUP BY report_date, affiliate_name
-                ORDER BY report_date DESC, ftds DESC, net_revenue DESC
+                GROUP BY affiliate_name
+                ORDER BY ftds DESC, net_revenue DESC
             """),
             "visualization_settings": {},
         },
