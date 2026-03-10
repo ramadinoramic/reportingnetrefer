@@ -426,7 +426,35 @@ def card_defs(db_id, affiliate_field_id, engine="postgres"):
             """),
             "visualization_settings": {},
         },
+        # ── Affiliate summary — one row per affiliate, totals for selected range ──
+        # Use this when no affiliate filter is set: see all affiliates side-by-side.
+        {
+            "name":    "AF – Affiliate Summary",
+            "display": "table",
+            "dataset_query": q(f"""
+                SELECT
+                    affiliate_name,
+                    SUM(clicks)                                     AS clicks,
+                    SUM(registrations)                              AS signups,
+                    SUM(first_depositors)                           AS ftds,
+                    ROUND(SUM(deposits),     2)                     AS deposits,
+                    ROUND(SUM(net_revenue),  2)                     AS net_revenue,
+                    CASE WHEN SUM(clicks) > 0
+                         THEN ROUND(SUM(registrations) * 100.0 / SUM(clicks), 2)
+                         ELSE 0
+                    END                                             AS click_to_reg_pct,
+                    CASE WHEN SUM(registrations) > 0
+                         THEN ROUND(SUM(first_depositors) * 100.0 / SUM(registrations), 2)
+                         ELSE 0
+                    END                                             AS reg_to_ftd_pct
+                FROM netrefer_stats {WHERE}
+                GROUP BY affiliate_name
+                ORDER BY ftds DESC, net_revenue DESC
+            """),
+            "visualization_settings": {},
+        },
         # ── Daily detail table — one row per affiliate per day ───────────
+        # Use this after picking a single affiliate: see day-by-day breakdown.
         {
             "name":    "AF – Daily Detail Table",
             "display": "table",
@@ -472,8 +500,9 @@ LAYOUT = [
     ("AF – Conversion Funnel",                   10,  0,  8, 7),
     ("AF – Revenue by Campaign",                 10,  8,  8, 7),
     ("AF – Revenue by Country",                  10, 16,  8, 7),
-    ("AF – Daily Detail Table",                  17,  0, 24, 8),
-    ("AF – Top 10 Affiliates (Last 7 Days)",     25,  0, 24, 8),
+    ("AF – Affiliate Summary",                   17,  0, 24, 8),
+    ("AF – Daily Detail Table",                  25,  0, 24, 8),
+    ("AF – Top 10 Affiliates (Last 7 Days)",     33,  0, 24, 8),
 ]
 
 
