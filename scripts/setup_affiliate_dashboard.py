@@ -157,13 +157,15 @@ def existing_dashboards(mb):
 PARAM_AFFILIATE = "a1b2c3d4-0001-0001-0001-000000000001"
 PARAM_START     = "a1b2c3d4-0002-0002-0002-000000000002"
 PARAM_END       = "a1b2c3d4-0003-0003-0003-000000000003"
+PARAM_MIN_FTDS  = "a1b2c3d4-0004-0004-0004-000000000004"
 
 
 def template_tags(affiliate_field_id):
     """
     affiliate_name – field filter → auto-dropdown (dimension type)
-    start_date     – plain date variable → {{start_date}} in SQL
-    end_date       – plain date variable → {{end_date}} in SQL
+    start_date     – plain date variable → '{{start_date}}' in SQL (quoted!)
+    end_date       – plain date variable → '{{end_date}}' in SQL (quoted!)
+    min_ftds       – plain number variable → {{min_ftds}} in SQL
     """
     return {
         "affiliate_name": {
@@ -189,12 +191,19 @@ def template_tags(affiliate_field_id):
             "type":         "date",
             "required":     False,
         },
+        "min_ftds": {
+            "id":           "tt-min-ftds",
+            "name":         "min_ftds",
+            "display-name": "Min FTDs",
+            "type":         "number",
+            "required":     False,
+        },
     }
 
 
-def param_mappings(card_id):
+def param_mappings(card_id, include_min_ftds=False):
     """Standard parameter→template-tag mappings for every filterable card."""
-    return [
+    mappings = [
         {
             "parameter_id": PARAM_AFFILIATE,
             "card_id":      card_id,
@@ -211,6 +220,13 @@ def param_mappings(card_id):
             "target":       ["variable", ["template-tag", "end_date"]],
         },
     ]
+    if include_min_ftds:
+        mappings.append({
+            "parameter_id": PARAM_MIN_FTDS,
+            "card_id":      card_id,
+            "target":       ["variable", ["template-tag", "min_ftds"]],
+        })
+    return mappings
 
 
 # ──────────────────────────────────────────────
@@ -241,21 +257,47 @@ def native_fixed(db_id, sql):
 
 
 # How the optional filters are injected:
-#   [[AND {{affiliate_name}}]]        → AND affiliate_name = 'value'  (field filter)
-#   [[AND report_date >= {{start_date}}]]  → AND report_date >= '2026-01-01'
-#   [[AND report_date <= {{end_date}}]]    → AND report_date <= '2026-03-10'
+#   [[AND {{affiliate_name}}]]             → field filter (Metabase handles quoting)
+#   [[AND report_date >= '{{start_date}}']]→ date string must be quoted in SQL
+#   [[AND report_date <= '{{end_date}}']]  → date string must be quoted in SQL
 # When no value is selected the whole [[...]] block is dropped automatically.
 WHERE = """
     WHERE 1=1
     [[AND {{affiliate_name}}]]
-    [[AND report_date >= {{start_date}}]]
-    [[AND report_date <= {{end_date}}]]
+    [[AND report_date >= '{{start_date}}']]
+    [[AND report_date <= '{{end_date}}']]
 """
+
+# Extended WHERE for the detail table — also supports min FTDs post-filter.
+# min_ftds is applied via HAVING since it filters an aggregate.
+WHERE_DETAIL = """
+    WHERE 1=1
+    [[AND {{affiliate_name}}]]
+    [[AND report_date >= '{{start_date}}']]
+    [[AND report_date <= '{{end_date}}']]
+"""
+HAVING_DETAIL = "[[HAVING SUM(first_depositors) >= {{min_ftds}}]]"
+
+
+def native_detail(db_id, sql, affiliate_field_id):
+    """Native query that includes the min_ftds template tag in addition to the standard ones."""
+    tags = template_tags(affiliate_field_id)
+    return {
+        "type":     "native",
+        "database": db_id,
+        "native":   {
+            "query":         sql,
+            "template-tags": tags,
+        },
+    }
 
 
 def card_defs(db_id, affiliate_field_id, engine="postgres"):
     def q(sql):
         return native(db_id, sql, affiliate_field_id)
+
+    def q_detail(sql):
+        return native_detail(db_id, sql, affiliate_field_id)
 
     def q_fixed(sql):
         return native_fixed(db_id, sql)
@@ -429,9 +471,10 @@ def card_defs(db_id, affiliate_field_id, engine="postgres"):
         },
         # ── Daily detail table (consolidated per affiliate+date) ─────────
         {
-            "name":    "AF – Daily Detail Table",
-            "display": "table",
-            "dataset_query": q(f"""
+            "name":         "AF – Daily Detail Table",
+            "display":      "table",
+            "has_min_ftds": True,
+            "dataset_query": q_detail(f"""
                 SELECT
                     report_date,
                     affiliate_name,
@@ -448,8 +491,9 @@ def card_defs(db_id, affiliate_field_id, engine="postgres"):
                          THEN ROUND(SUM(first_depositors) * 100.0 / SUM(registrations), 2)
                          ELSE 0
                     END                                             AS reg_to_ftd_pct
-                FROM netrefer_stats {WHERE}
+                FROM netrefer_stats {WHERE_DETAIL}
                 GROUP BY report_date, affiliate_name
+                {HAVING_DETAIL}
                 ORDER BY report_date DESC, ftds DESC, net_revenue DESC
             """),
             "visualization_settings": {},
@@ -478,14 +522,17 @@ LAYOUT = [
 ]
 
 
-def build_dashcards(card_name_to_id, card_no_params):
+def build_dashcards(card_name_to_id, card_no_params, card_min_ftds):
     dashcards = []
     for idx, (name, row, col, size_x, size_y) in enumerate(LAYOUT):
         card_id = card_name_to_id.get(name)
         if card_id is None:
             print(f"  [warn] card '{name}' not found, skipping")
             continue
-        mappings = [] if name in card_no_params else param_mappings(card_id)
+        if name in card_no_params:
+            mappings = []
+        else:
+            mappings = param_mappings(card_id, include_min_ftds=(name in card_min_ftds))
         dashcards.append({
             "id":                      -(idx + 1),
             "card_id":                  card_id,
@@ -529,11 +576,14 @@ def main():
     existing = existing_cards(mb)
     card_name_to_id = {}
     card_no_params  = set()
+    card_min_ftds   = set()
     print(f"\nUpserting cards …")
     for card in card_defs(db_id, affiliate_field_id, engine):
         name = card["name"]
         if card.get("no_params"):
             card_no_params.add(name)
+        if card.get("has_min_ftds"):
+            card_min_ftds.add(name)
         payload = {
             "name":                   name,
             "display":                card["display"],
@@ -570,6 +620,12 @@ def main():
             "slug": "end_date",
             "type": "date/single",
         },
+        {
+            "id":   PARAM_MIN_FTDS,
+            "name": "Min FTDs",
+            "slug": "min_ftds",
+            "type": "number/=",
+        },
     ]
 
     # Delete the existing dashboard so stale dashcard/parameter mappings are cleared
@@ -591,7 +647,7 @@ def main():
     dash_id = dash["id"]
     print(f"\n[created] Dashboard '{dash_name}' (id={dash_id})")
 
-    dashcards = build_dashcards(card_name_to_id, card_no_params)
+    dashcards = build_dashcards(card_name_to_id, card_no_params, card_min_ftds)
     print("  Wiring cards …")
     mb.put(f"/api/dashboard/{dash_id}", json={
         "parameters": dashboard_params,
