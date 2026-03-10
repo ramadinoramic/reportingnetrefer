@@ -161,12 +161,7 @@ PARAM_MIN_FTDS  = "a1b2c3d4-0004-0004-0004-000000000004"
 
 
 def template_tags(affiliate_field_id):
-    """
-    affiliate_name – field filter → auto-dropdown (dimension type)
-    start_date     – plain date variable → '{{start_date}}' in SQL (quoted!)
-    end_date       – plain date variable → '{{end_date}}' in SQL (quoted!)
-    min_ftds       – plain number variable → {{min_ftds}} in SQL
-    """
+    """Standard tags for all filterable cards (affiliate + date range only)."""
     return {
         "affiliate_name": {
             "id":           "tt-affiliate",
@@ -191,14 +186,20 @@ def template_tags(affiliate_field_id):
             "type":         "date",
             "required":     False,
         },
-        "min_ftds": {
-            "id":           "tt-min-ftds",
-            "name":         "min_ftds",
-            "display-name": "Min FTDs",
-            "type":         "number",
-            "required":     False,
-        },
     }
+
+
+def template_tags_detail(affiliate_field_id):
+    """Tags for the Daily Detail Table — same as standard plus min_ftds."""
+    tags = template_tags(affiliate_field_id)
+    tags["min_ftds"] = {
+        "id":           "tt-min-ftds",
+        "name":         "min_ftds",
+        "display-name": "Min FTDs",
+        "type":         "number",
+        "required":     False,
+    }
+    return tags
 
 
 def param_mappings(card_id, include_min_ftds=False):
@@ -280,14 +281,13 @@ HAVING_DETAIL = "[[HAVING SUM(first_depositors) >= {{min_ftds}}]]"
 
 
 def native_detail(db_id, sql, affiliate_field_id):
-    """Native query that includes the min_ftds template tag in addition to the standard ones."""
-    tags = template_tags(affiliate_field_id)
+    """Native query for the detail table — includes min_ftds tag in addition to the standard ones."""
     return {
         "type":     "native",
         "database": db_id,
         "native":   {
             "query":         sql,
-            "template-tags": tags,
+            "template-tags": template_tags_detail(affiliate_field_id),
         },
     }
 
