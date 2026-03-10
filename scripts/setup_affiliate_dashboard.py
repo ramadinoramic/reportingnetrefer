@@ -460,7 +460,7 @@ def card_defs(db_id, affiliate_field_id, engine="postgres"):
                     END                                             AS reg_to_ftd_pct
                 FROM netrefer_stats {WHERE}
                 GROUP BY report_date, affiliate_name
-                ORDER BY report_date DESC, net_revenue DESC
+                ORDER BY report_date DESC, ftds DESC, net_revenue DESC
             """),
             "visualization_settings": {},
         },
