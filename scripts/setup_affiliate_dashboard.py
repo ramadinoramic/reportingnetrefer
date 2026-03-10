@@ -254,7 +254,7 @@ def card_defs(db_id, affiliate_field_id, date_field_id, engine="postgres"):
             "name":    "AF – Clicks",
             "display": "scalar",
             "dataset_query": q(f"""
-                SELECT SUM(clicks) AS clicks
+                SELECT COALESCE(SUM(clicks), 0) AS clicks
                 FROM netrefer_stats {WHERE}
             """),
             "visualization_settings": {},
@@ -263,7 +263,7 @@ def card_defs(db_id, affiliate_field_id, date_field_id, engine="postgres"):
             "name":    "AF – Registrations",
             "display": "scalar",
             "dataset_query": q(f"""
-                SELECT SUM(registrations) AS registrations
+                SELECT COALESCE(SUM(registrations), 0) AS registrations
                 FROM netrefer_stats {WHERE}
             """),
             "visualization_settings": {},
@@ -272,7 +272,7 @@ def card_defs(db_id, affiliate_field_id, date_field_id, engine="postgres"):
             "name":    "AF – FTDs",
             "display": "scalar",
             "dataset_query": q(f"""
-                SELECT SUM(first_depositors) AS ftds
+                SELECT COALESCE(SUM(first_depositors), 0) AS ftds
                 FROM netrefer_stats {WHERE}
             """),
             "visualization_settings": {},
@@ -281,7 +281,7 @@ def card_defs(db_id, affiliate_field_id, date_field_id, engine="postgres"):
             "name":    "AF – Net Revenue",
             "display": "scalar",
             "dataset_query": q(f"""
-                SELECT ROUND(SUM(net_revenue), 2) AS net_revenue
+                SELECT ROUND(COALESCE(SUM(net_revenue), 0), 2) AS net_revenue
                 FROM netrefer_stats {WHERE}
             """),
             "visualization_settings": {"number.style": "currency", "currency": "EUR"},
@@ -290,7 +290,7 @@ def card_defs(db_id, affiliate_field_id, date_field_id, engine="postgres"):
             "name":    "AF – Deposits",
             "display": "scalar",
             "dataset_query": q(f"""
-                SELECT ROUND(SUM(deposits), 2) AS deposits
+                SELECT ROUND(COALESCE(SUM(deposits), 0), 2) AS deposits
                 FROM netrefer_stats {WHERE}
             """),
             "visualization_settings": {"number.style": "currency", "currency": "EUR"},
