@@ -6,11 +6,11 @@ PYTHON := $(shell command -v python3 || command -v python)
 setup:
 	$(PYTHON) -m pip install -r requirements.txt
 
-# Start MySQL + Metabase
+# Start MySQL + ETL watcher (docker compose up -d)
 up:
-	docker compose up -d
-	@echo "Metabase → http://localhost:3000"
-	@echo "MySQL    → localhost:3306"
+	docker compose up -d --build
+	@echo "MySQL      → localhost:3308"
+	@echo "ETL watcher running inside Docker (drop CSVs into ./drop/)"
 
 # Stop containers (data volumes are preserved)
 down:
@@ -105,3 +105,8 @@ etl-docker:
 # Usage: make audit-csv FILE=drop/netrefer_2026-03-09.csv
 audit-csv:
 	$(PYTHON) scripts/audit_csv.py --file $(FILE)
+
+# Install monthly cron job to email board report on 1st of each month
+# Usage: make install-cron EMAIL=you@example.com
+install-cron:
+	@bash scripts/install_cron.sh $(EMAIL)

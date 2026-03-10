@@ -17,5 +17,21 @@ services:
       timeout: 5s
       retries: 10
 
+  etl:
+    build:
+      context: .
+      dockerfile: Dockerfile.etl
+    env_file: .env
+    environment:
+      # Inside Docker the DB is reachable via the service name, not localhost
+      MYSQL_HOST: db
+      MYSQL_PORT: 3306
+    volumes:
+      - ./drop:/app/drop
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   mysql_data:
