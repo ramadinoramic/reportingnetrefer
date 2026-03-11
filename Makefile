@@ -50,21 +50,21 @@ board-report:
 		$(if $(EMAIL),--email $(EMAIL),)
 
 # Create / update the Board Report dashboard in Metabase
-# Usage: make board-dashboard USER=admin@example.com PASSWORD=secret
+# Usage: make board-dashboard MB_USER=admin@example.com MB_PASS=secret
 board-dashboard:
 	$(PYTHON) scripts/setup_board_dashboard.py \
 		--host $(or $(HOST),http://localhost:3000) \
-		--user $(USER) \
-		--password $(PASSWORD) \
+		--user $(MB_USER) \
+		--password $(MB_PASS) \
 		$(if $(DB_NAME),--db-name $(DB_NAME),)
 
 # Create / update the Affiliate Deep Dive dashboard in Metabase
-# Usage: make affiliate-dashboard USER=admin@example.com PASSWORD=secret
+# Usage: make affiliate-dashboard MB_USER=admin@example.com MB_PASS=secret
 affiliate-dashboard:
 	$(PYTHON) scripts/setup_affiliate_dashboard.py \
 		--host $(or $(HOST),http://localhost:3000) \
-		--user $(USER) \
-		--password $(PASSWORD) \
+		--user $(MB_USER) \
+		--password $(MB_PASS) \
 		$(if $(DB_NAME),--db-name $(DB_NAME),)
 
 # Run the unique-key migration on an existing database
@@ -75,12 +75,12 @@ migrate-key:
 		< sql/migrate_unique_key.sql
 
 # Create / update the ETL Health dashboard in Metabase
-# Usage: make etl-dashboard USER=admin@example.com PASSWORD=secret
+# Usage: make etl-dashboard MB_USER=admin@example.com MB_PASS=secret
 etl-dashboard:
 	$(PYTHON) scripts/setup_etl_dashboard.py \
 		--host $(or $(HOST),http://localhost:3000) \
-		--user $(USER) \
-		--password $(PASSWORD) \
+		--user $(MB_USER) \
+		--password $(MB_PASS) \
 		$(if $(DB_NAME),--db-name $(DB_NAME),)
 
 # Run the etl_runs schema migration (adds rows_parsed + warnings columns)
@@ -109,6 +109,20 @@ etl-docker:
 # Usage: make audit-csv FILE=drop/netrefer_2026-03-09.csv
 audit-csv:
 	$(PYTHON) scripts/audit_csv.py --file $(FILE)
+
+# Fix Metabase date picker timezone: sets report-timezone to Europe/Istanbul (UTC+3).
+# Run this once whenever Metabase is freshly installed or timezone resets.
+# Usage: make fix-tz MB_USER=admin@example.com MB_PASS=secret
+fix-tz:
+	@TOKEN=$$(curl -s -X POST $(or $(HOST),http://localhost:3000)/api/session \
+	  -H "Content-Type: application/json" \
+	  -d "{\"username\":\"$(MB_USER)\",\"password\":\"$(MB_PASS)\"}" \
+	  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	curl -s -X PUT $(or $(HOST),http://localhost:3000)/api/setting/report-timezone \
+	  -H "Content-Type: application/json" \
+	  -H "X-Metabase-Session: $$TOKEN" \
+	  -d '{"value":"Europe/Istanbul"}' && \
+	echo "Done — Metabase timezone set to Europe/Istanbul"
 
 # Show per-day row counts and totals for the last 30 days — quick data-quality check
 # Usage: make diagnose
