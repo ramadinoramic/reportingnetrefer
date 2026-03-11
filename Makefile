@@ -142,6 +142,14 @@ check-date:
 	   WHERE report_date = '$(DATE)' \
 	   GROUP BY report_date;"
 
+# Show ETL load history for recent dates — tells you what filename/date each CSV was loaded as
+# Usage: make audit-etl
+audit-etl:
+	docker compose exec db mysql -u $$MYSQL_USER -p$$MYSQL_PASSWORD $$MYSQL_DATABASE -e \
+	  "SELECT started_at, source_detail, rows_upserted, status, error_message \
+	   FROM etl_runs \
+	   ORDER BY started_at DESC LIMIT 20;"
+
 # Show per-day row counts and totals for the last 30 days — quick data-quality check
 # Usage: make diagnose
 diagnose:
