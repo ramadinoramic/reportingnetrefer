@@ -1,4 +1,4 @@
-.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard etl-dashboard migrate-key migrate-etl audit-csv watch etl-docker
+.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard etl-dashboard migrate-key migrate-etl audit-csv watch etl-docker diagnose
 
 PYTHON := $(shell test -f venv/bin/python && echo venv/bin/python || command -v python3 || command -v python)
 
@@ -105,6 +105,16 @@ etl-docker:
 # Usage: make audit-csv FILE=drop/netrefer_2026-03-09.csv
 audit-csv:
 	$(PYTHON) scripts/audit_csv.py --file $(FILE)
+
+# Show per-day row counts and totals for the last 30 days — quick data-quality check
+# Usage: make diagnose
+diagnose:
+	docker compose exec db mysql -u $$MYSQL_USER -p$$MYSQL_PASSWORD $$MYSQL_DATABASE -e \
+	  "SELECT report_date, COUNT(*) rows, SUM(clicks) clicks, SUM(first_depositors) ftds, \
+	   ROUND(SUM(net_revenue),0) net_revenue \
+	   FROM netrefer_stats \
+	   WHERE report_date >= CURDATE() - INTERVAL 30 DAY \
+	   GROUP BY report_date ORDER BY report_date DESC;"
 
 # Install monthly cron job to email board report on 1st of each month
 # Usage: make install-cron EMAIL=you@example.com

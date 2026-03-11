@@ -254,6 +254,46 @@ def validate_rows(records: List[Dict]) -> List[str]:
     return warns
 
 
+def check_duplicate_day(conn, report_date: date, records: List[Dict]) -> List[str]:
+    """
+    Warn if the incoming data has identical totals to any existing day in the last 7 days.
+    The most common cause: Netrefer served a cached/stale export, so the user
+    renamed yesterday's file as today's and the ETL silently loaded duplicate data.
+    """
+    warns: List[str] = []
+    if not records:
+        return warns
+
+    incoming_clicks = sum(r.get("clicks", 0) for r in records)
+    incoming_ftds   = sum(r.get("first_depositors", 0) for r in records)
+    incoming_regs   = sum(r.get("registrations", 0) for r in records)
+
+    # Nothing meaningful to compare against
+    if incoming_clicks == 0 and incoming_ftds == 0 and incoming_regs == 0:
+        return warns
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            SELECT report_date, SUM(clicks) c, SUM(first_depositors) f, SUM(registrations) r
+            FROM netrefer_stats
+            WHERE report_date != %s
+              AND report_date >= %s - INTERVAL 7 DAY
+            GROUP BY report_date
+            HAVING c = %s AND f = %s AND r = %s
+        """, (report_date, report_date, incoming_clicks, incoming_ftds, incoming_regs))
+        for (match_date, _, _, _) in cursor.fetchall():
+            warns.append(
+                f"DUPLICATE_DAY: data for {report_date} is identical to {match_date} "
+                f"(clicks={incoming_clicks}, ftds={incoming_ftds}, regs={incoming_regs}). "
+                f"Likely a stale Netrefer export — re-download from the portal."
+            )
+    finally:
+        cursor.close()
+
+    return warns
+
+
 def check_outliers(conn, report_date: date) -> List[str]:
     """
     Compare today's aggregates to the 14-day rolling average.
@@ -421,6 +461,13 @@ def load_to_mysql(records: List[Dict], source: str,
         cursor.execute(AUDIT_START, (run_id, source))
         conn.commit()
 
+        # Check for duplicate-day data BEFORE the UPSERT (compare incoming vs existing)
+        report_date = records[0]["report_date"] if records else None
+        dup_warns = check_duplicate_day(conn, report_date, records) if report_date else []
+        if dup_warns:
+            for w in dup_warns:
+                log.warning("[DQ] %s", w)
+
         for i in range(0, len(records), batch_size):
             batch = records[i: i + batch_size]
             cursor.executemany(UPSERT_SQL, batch)
@@ -429,9 +476,8 @@ def load_to_mysql(records: List[Dict], source: str,
             log.info("Batch %d–%d: %d rows affected", i + 1, i + len(batch), cursor.rowcount)
 
         # Outlier check against rolling 14-day average
-        report_date    = records[0]["report_date"] if records else None
         outlier_warns  = check_outliers(conn, report_date) if report_date else []
-        all_warns      = (struct_warnings or []) + outlier_warns
+        all_warns      = (struct_warnings or []) + dup_warns + outlier_warns
 
         if all_warns:
             for w in all_warns:
