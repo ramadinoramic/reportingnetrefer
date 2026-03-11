@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-setup_daily_dashboard.py  (v2)
+setup_daily_dashboard.py  (v3)
 ==============================
-Netrefer daily dashboard with date + affiliate filters.
+Netrefer daily dashboard with working date + affiliate filters.
 
 Defaults:
   • No date selected  → shows the most-recently loaded date automatically
   • Date selected     → shows that specific date
-  • Affiliate typed   → filters by partial name match (case-insensitive)
+  • Affiliate         → searchable dropdown of real affiliate names from the DB
 
 Usage (first time – needs initial Metabase setup):
   python scripts/setup_daily_dashboard.py \\
@@ -23,10 +23,15 @@ Usage (Metabase already configured):
 import argparse, json, sys, time, urllib.request, urllib.error
 
 DASH_NAME     = "Netrefer Daily Report"
-DATE_PARAM_ID = "nr-date-param-001"   # fixed → idempotent re-runs
+
+# Fixed IDs so re-running the script is idempotent
+DATE_PARAM_ID = "nr-date-param-001"
 AFF_PARAM_ID  = "nr-aff-param-002"
-DATE_TAG_ID   = "nr-date-tag-001"
-AFF_TAG_ID    = "nr-aff-tag-002"
+
+# Template tag UUIDs (internal Metabase use – just need to be consistent)
+DATE_TAG_UUID = "aaaaaaaa-date-tag-001"
+AFF_TAG_UUID  = "bbbbbbbb-aff--tag-002"
+
 
 # ── Metabase HTTP client ─────────────────────────────────────────────────────
 
@@ -127,57 +132,92 @@ def wait_for_sync(mb, db_id, timeout=120):
     raise RuntimeError("Sync timed out – is the netrefer_stats table created?")
 
 
+def get_field_id(mb, db_id, table_name, field_name):
+    """Look up the Metabase internal field ID for a column."""
+    meta = mb.get(f"/api/database/{db_id}/metadata")
+    for table in meta.get("tables", []):
+        if table["name"] == table_name:
+            for field in table.get("fields", []):
+                if field["name"] == field_name:
+                    return field["id"]
+    return None
+
+
+def enable_field_search(mb, field_id):
+    """Make Metabase pre-index values so the dropdown search works."""
+    mb.put(f"/api/field/{field_id}", {
+        "has_field_values": "search",
+        "semantic_type":    "type/Name",
+    })
+
+
 # ── Template-tag helpers ──────────────────────────────────────────────────────
+#
+# CRITICAL: the dict KEY must be the variable name used in {{...}} in the SQL.
+# Metabase uses the key to locate the tag when injecting parameter values.
+# Using any other key (e.g. a UUID) breaks the parameter→card binding silently.
+#
+# Good:  {"target_date": {"id": <uuid>, "name": "target_date", ...}}
+# Bad:   {"some-uuid":   {"id": <uuid>, "name": "target_date", ...}}  ← filter ignored!
 
 def date_tag():
+    """Optional date variable – drives the 'default to latest' subquery."""
     return {
-        DATE_TAG_ID: {
-            "id": DATE_TAG_ID, "name": "target_date",
-            "display-name": "Date", "type": "date",
-            "required": False, "default": None,
+        "target_date": {               # ← key MUST match {{target_date}} in SQL
+            "id":           DATE_TAG_UUID,
+            "name":         "target_date",
+            "display-name": "Date",
+            "type":         "date",    # enables date/single picker
+            "required":     False,
+            "default":      None,
         }
     }
 
-def aff_tag():
+
+def aff_field_tag(aff_field_id):
+    """
+    Field filter for affiliate_name – renders as a searchable dropdown.
+    The 'dimension' type tells Metabase to look up real values from the field.
+    {{affiliate_filter}} expands to the full WHERE fragment, e.g.:
+        affiliate_name = 'SEO'
+    """
     return {
-        AFF_TAG_ID: {
-            "id": AFF_TAG_ID, "name": "affiliate_filter",
-            "display-name": "Affiliate", "type": "text",
-            "required": False, "default": None,
+        "affiliate_filter": {          # ← key MUST match {{affiliate_filter}} in SQL
+            "id":           AFF_TAG_UUID,
+            "name":         "affiliate_filter",
+            "display-name": "Affiliate",
+            "type":         "dimension",
+            "dimension":    ["field", aff_field_id, None],
+            "widget-type":  "string/=",
+            "required":     False,
+            "default":      None,
         }
     }
 
-def both_tags():
-    return {**date_tag(), **aff_tag()}
 
-
-def sql_card(db_id, name, display, sql, tags=None, vis=None):
-    return {
-        "name":    name,
-        "display": display,
-        "dataset_query": {
-            "type": "native", "database": db_id,
-            "native": {"query": sql, "template-tags": tags or {}},
-        },
-        "visualization_settings": vis or {},
-    }
+def both_tags(aff_field_id):
+    return {**date_tag(), **aff_field_tag(aff_field_id)}
 
 
 # ── SQL patterns ─────────────────────────────────────────────────────────────
 #
-#  For KPI / breakdown cards:
-#    "show the latest loaded date unless a specific date is chosen"
-#  → report_date = (SELECT MAX(report_date) FROM netrefer_stats
-#                   WHERE 1=1 [[AND report_date = {{target_date}}]])
+# Date default trick:
+#   "Show the selected date; if none selected, show the latest loaded date."
 #
-#  For the 30-day trend charts:
-#    date filter is not applied (they always show 30 days of history)
-#    affiliate filter IS applied so the trend reflects selected affiliate
+#   report_date = (
+#       SELECT MAX(report_date) FROM netrefer_stats
+#       WHERE 1=1 [[AND report_date = {{target_date}}]]
+#   )
 #
-# ─────────────────────────────────────────────────────────────────────────────
+#   When target_date has a value  → inner WHERE filters to that date → MAX = that date
+#   When target_date is empty     → [[...]] block dropped → MAX = overall latest date
+#
+# Affiliate field filter:
+#   [[AND {{affiliate_filter}}]]
+#   Metabase expands {{affiliate_filter}} to: affiliate_name = 'Chosen Name'
+#   The [[...]] block drops cleanly when no affiliate is chosen.
 
-def latest_clause():
-    """Subquery: returns the chosen date, or the most recently loaded date."""
+def lc():  # latest-or-chosen date clause
     return (
         "report_date = (\n"
         "    SELECT MAX(report_date) FROM netrefer_stats\n"
@@ -185,42 +225,52 @@ def latest_clause():
         ")"
     )
 
-def aff_clause():
-    return "[[AND LOWER(affiliate_name) LIKE LOWER(CONCAT('%', {{affiliate_filter}}, '%'))]]"
+def ac():  # affiliate clause
+    return "[[AND {{affiliate_filter}}]]"
 
 
-def make_cards(db_id):
-    lc = latest_clause()
-    ac = aff_clause()
+def sql_card(db_id, name, display, sql, tags=None, vis=None):
+    return {
+        "name":    name,
+        "display": display,
+        "dataset_query": {
+            "type":     "native",
+            "database": db_id,
+            "native":   {"query": sql, "template-tags": tags or {}},
+        },
+        "visualization_settings": vis or {},
+    }
 
+
+def make_cards(db_id, aff_field_id):
     return [
-        # ── date banner ──────────────────────────────────────────────────────
+        # ── date banner (no filters – always shows actual latest in DB) ─────
         sql_card(db_id, "Data Date", "scalar",
-            "SELECT MAX(report_date) AS `Showing data for` FROM netrefer_stats",
+            "SELECT MAX(report_date) AS `Latest loaded date` FROM netrefer_stats",
             tags={}),
 
-        # ── KPIs (default = latest date; date+affiliate filters apply) ───────
+        # ── KPI scalars: date + affiliate filters ─────────────────────────
         sql_card(db_id, "Clicks", "scalar",
-            f"SELECT SUM(clicks) FROM netrefer_stats\nWHERE {lc}\n{ac}",
-            tags=both_tags()),
+            f"SELECT SUM(clicks)\nFROM netrefer_stats\nWHERE {lc()}\n{ac()}",
+            tags=both_tags(aff_field_id)),
 
         sql_card(db_id, "Registrations", "scalar",
-            f"SELECT SUM(registrations) FROM netrefer_stats\nWHERE {lc}\n{ac}",
-            tags=both_tags()),
+            f"SELECT SUM(registrations)\nFROM netrefer_stats\nWHERE {lc()}\n{ac()}",
+            tags=both_tags(aff_field_id)),
 
         sql_card(db_id, "FTDs", "scalar",
-            f"SELECT SUM(first_depositors) FROM netrefer_stats\nWHERE {lc}\n{ac}",
-            tags=both_tags()),
+            f"SELECT SUM(first_depositors)\nFROM netrefer_stats\nWHERE {lc()}\n{ac()}",
+            tags=both_tags(aff_field_id)),
 
         sql_card(db_id, "Net Revenue", "scalar",
-            f"SELECT ROUND(SUM(net_revenue),2) FROM netrefer_stats\nWHERE {lc}\n{ac}",
-            tags=both_tags()),
+            f"SELECT ROUND(SUM(net_revenue),2)\nFROM netrefer_stats\nWHERE {lc()}\n{ac()}",
+            tags=both_tags(aff_field_id)),
 
         sql_card(db_id, "Deposits", "scalar",
-            f"SELECT ROUND(SUM(deposits),2) FROM netrefer_stats\nWHERE {lc}\n{ac}",
-            tags=both_tags()),
+            f"SELECT ROUND(SUM(deposits),2)\nFROM netrefer_stats\nWHERE {lc()}\n{ac()}",
+            tags=both_tags(aff_field_id)),
 
-        # ── 30-day trend charts (affiliate filter applies, date filter does not)
+        # ── 30-day trends: affiliate filter only (date doesn't apply here) ─
         sql_card(db_id, "Daily Conversions (30d)", "line", f"""
 SELECT report_date,
        SUM(clicks)           AS clicks,
@@ -228,12 +278,12 @@ SELECT report_date,
        SUM(first_depositors) AS ftds
 FROM   netrefer_stats
 WHERE  report_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-{ac}
+{ac()}
 GROUP  BY report_date
 ORDER  BY report_date""",
-            tags=aff_tag(),
+            tags=aff_field_tag(aff_field_id),
             vis={"graph.dimensions": ["report_date"],
-                 "graph.metrics":   ["clicks","registrations","ftds"]}),
+                 "graph.metrics":   ["clicks", "registrations", "ftds"]}),
 
         sql_card(db_id, "Daily Revenue (30d)", "line", f"""
 SELECT report_date,
@@ -241,52 +291,46 @@ SELECT report_date,
        ROUND(SUM(deposits),2)    AS deposits
 FROM   netrefer_stats
 WHERE  report_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-{ac}
+{ac()}
 GROUP  BY report_date
 ORDER  BY report_date""",
-            tags=aff_tag(),
+            tags=aff_field_tag(aff_field_id),
             vis={"graph.dimensions": ["report_date"],
-                 "graph.metrics":   ["net_revenue","deposits"]}),
+                 "graph.metrics":   ["net_revenue", "deposits"]}),
 
-        # ── breakdowns (latest date; date+affiliate filters apply) ────────────
+        # ── breakdowns: date + affiliate filters ──────────────────────────
         sql_card(db_id, "Revenue by Country", "pie", f"""
-SELECT country,
-       ROUND(SUM(net_revenue),2) AS net_revenue
+SELECT country, ROUND(SUM(net_revenue),2) AS net_revenue
 FROM   netrefer_stats
-WHERE  {lc}
-  AND  country != ''
-{ac}
+WHERE  {lc()} AND country != ''
+{ac()}
 GROUP  BY country
 ORDER  BY net_revenue DESC""",
-            tags=both_tags(),
-            vis={"pie.dimension":"country","pie.metric":"net_revenue"}),
+            tags=both_tags(aff_field_id),
+            vis={"pie.dimension": "country", "pie.metric": "net_revenue"}),
 
         sql_card(db_id, "Top Affiliates by Revenue", "bar", f"""
-SELECT affiliate_name,
-       ROUND(SUM(net_revenue),2) AS net_revenue
+SELECT affiliate_name, ROUND(SUM(net_revenue),2) AS net_revenue
 FROM   netrefer_stats
-WHERE  {lc}
-{ac}
+WHERE  {lc()}
+{ac()}
 GROUP  BY affiliate_id, affiliate_name
 ORDER  BY net_revenue DESC
 LIMIT  15""",
-            tags=both_tags(),
-            vis={"graph.dimensions":["affiliate_name"],
+            tags=both_tags(aff_field_id),
+            vis={"graph.dimensions": ["affiliate_name"],
                  "graph.metrics":   ["net_revenue"]}),
 
         sql_card(db_id, "Conversion Funnel", "bar", f"""
-SELECT 'Clicks'         AS stage, SUM(clicks)            AS total
-  FROM netrefer_stats WHERE {lc} {ac}
+SELECT 'Clicks'        AS stage, SUM(clicks)            AS total FROM netrefer_stats WHERE {lc()} {ac()}
 UNION ALL
-SELECT 'Registrations',           SUM(registrations)
-  FROM netrefer_stats WHERE {lc} {ac}
+SELECT 'Registrations',           SUM(registrations)             FROM netrefer_stats WHERE {lc()} {ac()}
 UNION ALL
-SELECT 'FTDs',                    SUM(first_depositors)
-  FROM netrefer_stats WHERE {lc} {ac}""",
-            tags=both_tags(),
-            vis={"graph.dimensions":["stage"],"graph.metrics":["total"]}),
+SELECT 'FTDs',                    SUM(first_depositors)          FROM netrefer_stats WHERE {lc()} {ac()}""",
+            tags=both_tags(aff_field_id),
+            vis={"graph.dimensions": ["stage"], "graph.metrics": ["total"]}),
 
-        # ── full detail table ─────────────────────────────────────────────────
+        # ── detail table: date + affiliate filters ────────────────────────
         sql_card(db_id, "Affiliate Detail Table", "table", f"""
 SELECT affiliate_name,
        country,
@@ -298,35 +342,34 @@ SELECT affiliate_name,
        ROUND(net_revenue, 2)      AS net_revenue,
        ROUND(total_reward,2)      AS commission
 FROM   netrefer_stats
-WHERE  {lc}
+WHERE  {lc()}
   AND  (clicks > 0 OR registrations > 0
         OR first_depositors > 0 OR net_revenue != 0)
-{ac}
+{ac()}
 ORDER  BY net_revenue DESC""",
-            tags=both_tags()),
+            tags=both_tags(aff_field_id)),
     ]
 
 
 # ── Dashboard layout (24-col grid) ───────────────────────────────────────────
 
 LAYOUT = [
-    # name                          row  col   w   h
-    ("Data Date",                     0,  0,   4,  2),
-    ("Clicks",                        0,  4,   4,  2),
-    ("Registrations",                 0,  8,   4,  2),
-    ("FTDs",                          0, 12,   4,  2),
-    ("Net Revenue",                   0, 16,   4,  2),
-    ("Deposits",                      0, 20,   4,  2),
-    ("Daily Conversions (30d)",       2,  0,  12,  6),
-    ("Daily Revenue (30d)",           2, 12,  12,  6),
-    ("Top Affiliates by Revenue",     8,  0,   8,  8),
-    ("Revenue by Country",            8,  8,   8,  8),
-    ("Conversion Funnel",             8, 16,   8,  8),
-    ("Affiliate Detail Table",       16,  0,  24,  9),
+    # card name                      row  col   w   h
+    ("Data Date",                      0,  0,   4,  2),
+    ("Clicks",                         0,  4,   4,  2),
+    ("Registrations",                  0,  8,   4,  2),
+    ("FTDs",                           0, 12,   4,  2),
+    ("Net Revenue",                    0, 16,   4,  2),
+    ("Deposits",                       0, 20,   4,  2),
+    ("Daily Conversions (30d)",        2,  0,  12,  6),
+    ("Daily Revenue (30d)",            2, 12,  12,  6),
+    ("Top Affiliates by Revenue",      8,  0,   8,  8),
+    ("Revenue by Country",             8,  8,   8,  8),
+    ("Conversion Funnel",              8, 16,   8,  8),
+    ("Affiliate Detail Table",        16,  0,  24,  9),
 ]
 
-# Which cards respond to which dashboard parameters
-# Format: {card_name: [param_ids]}
+# Which cards respond to which parameters
 DATE_CARDS = {
     "Clicks", "Registrations", "FTDs", "Net Revenue", "Deposits",
     "Revenue by Country", "Top Affiliates by Revenue",
@@ -344,20 +387,20 @@ AFF_CARDS = {
 
 DASH_PARAMS = [
     {
-        "id":           DATE_PARAM_ID,
-        "type":         "date/single",
-        "name":         "Date",
-        "slug":         "target_date",
-        "default":      None,
-        "sectionId":    "date",
+        "id":        DATE_PARAM_ID,
+        "type":      "date/single",
+        "name":      "Date",
+        "slug":      "target_date",
+        "default":   None,
+        "sectionId": "date",
     },
     {
-        "id":           AFF_PARAM_ID,
-        "type":         "string/=",
-        "name":         "Affiliate (partial name)",
-        "slug":         "affiliate_filter",
-        "default":      None,
-        "sectionId":    "string",
+        "id":        AFF_PARAM_ID,
+        "type":      "string/=",
+        "name":      "Affiliate",
+        "slug":      "affiliate_filter",
+        "default":   None,
+        "sectionId": "string",
     },
 ]
 
@@ -394,15 +437,25 @@ def main():
                            args.db_name, args.db_user, args.db_password)
     wait_for_sync(mb, db_id)
 
+    # Look up affiliate_name field ID for the dropdown
+    print("  Looking up affiliate_name field ID …", end="", flush=True)
+    aff_field_id = get_field_id(mb, db_id, "netrefer_stats", "affiliate_name")
+    if aff_field_id is None:
+        sys.exit("\n  ERROR: affiliate_name field not found – "
+                 "run a sync first or check table name")
+    print(f" id={aff_field_id} ✓")
+    enable_field_search(mb, aff_field_id)
+    print("  Affiliate search index enabled ✓")
+
     # ── upsert cards ──────────────────────────────────────────────────────
     print("\nUpserting cards …")
     existing = {c["name"]: c["id"] for c in mb.get("/api/card")}
     name_to_id = {}
 
-    for card in make_cards(db_id):
+    for card in make_cards(db_id, aff_field_id):
         name = card["name"]
         payload = {k: card[k] for k in
-                   ("name","display","dataset_query","visualization_settings")}
+                   ("name", "display", "dataset_query", "visualization_settings")}
         if name in existing:
             cid = existing[name]
             mb.put(f"/api/card/{cid}", payload)
@@ -413,7 +466,7 @@ def main():
             name_to_id[name] = r["id"]
             print(f"  [created] {name} (id={r['id']})")
 
-    # ── archive old, create new dashboard ────────────────────────────────
+    # ── archive old, build fresh dashboard ───────────────────────────────
     print("\nBuilding dashboard …")
     for d in mb.get("/api/dashboard"):
         if d["name"] == DASH_NAME and not d.get("archived"):
@@ -439,13 +492,15 @@ def main():
             mappings.append({
                 "parameter_id": DATE_PARAM_ID,
                 "card_id":      cid,
-                "target":       ["variable", ["template-tag", "target_date"]],
+                # "variable" target = simple date template tag
+                "target": ["variable", ["template-tag", "target_date"]],
             })
         if name in AFF_CARDS:
             mappings.append({
                 "parameter_id": AFF_PARAM_ID,
                 "card_id":      cid,
-                "target":       ["variable", ["template-tag", "affiliate_filter"]],
+                # "dimension" target = field-filter template tag
+                "target": ["dimension", ["template-tag", "affiliate_filter"]],
             })
 
         dashcards.append({
@@ -456,24 +511,28 @@ def main():
             "visualization_settings": {},
         })
 
+    # Try modern API first, fall back to legacy
     try:
-        mb.put(f"/api/dashboard/{dash_id}", {"dashcards": dashcards})
+        mb.put(f"/api/dashboard/{dash_id}", {
+            "parameters": DASH_PARAMS,
+            "dashcards":  dashcards,
+        })
     except Exception:
         mb.post(f"/api/dashboard/{dash_id}/dashcards", {"cards": dashcards})
 
-    print(f"\n{'='*54}")
+    print(f"\n{'='*56}")
     print(f"  Done!")
     print(f"  Open: {args.host}/dashboard/{dash_id}")
     print()
     print(f"  Filters:")
-    print(f"    Date             – pick any date (blank = latest loaded)")
-    print(f"    Affiliate (partial name) – type part of a name to filter")
+    print(f"    Date      – blank = auto latest date | pick date = that day")
+    print(f"    Affiliate – searchable dropdown of real affiliate names")
     print()
     print(f"  Daily workflow:")
     print(f"    1. Drop netrefer_YYYY-MM-DD.csv into drop/")
     print(f"    2. Wait ~60s for the ETL watcher")
-    print(f"    3. Refresh the dashboard – new date appears automatically")
-    print(f"{'='*54}\n")
+    print(f"    3. Refresh – dashboard auto-shows the new date")
+    print(f"{'='*56}\n")
 
 
 if __name__ == "__main__":
