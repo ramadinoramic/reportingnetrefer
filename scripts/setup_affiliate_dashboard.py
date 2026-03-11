@@ -16,41 +16,48 @@ Usage:
 
 import argparse
 import sys
-import requests
+import json
+import urllib.request
+import urllib.error
 
 # ──────────────────────────────────────────────
-# Metabase client
+# Metabase client  (stdlib only – no pip deps)
 # ──────────────────────────────────────────────
 
 class MetabaseClient:
     def __init__(self, host, email, password):
         self.host = host.rstrip("/")
-        self.session = requests.Session()
-        self.session.headers.update({"Content-Type": "application/json"})
-        r = self.session.post(f"{self.host}/api/session",
-                              json={"username": email, "password": password})
-        r.raise_for_status()
-        self.session.headers["X-Metabase-Session"] = r.json()["id"]
+        self.token = None
+        resp = self._raw("POST", "/api/session",
+                         {"username": email, "password": password})
+        self.token = resp["id"]
 
-    def get(self, path, **kw):
-        r = self.session.get(f"{self.host}{path}", **kw)
-        r.raise_for_status()
-        return r.json()
+    def _raw(self, method, path, body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        headers = {"Content-Type": "application/json"}
+        if self.token:
+            headers["X-Metabase-Session"] = self.token
+        req = urllib.request.Request(
+            self.host + path, data=data, headers=headers, method=method)
+        try:
+            resp = urllib.request.urlopen(req)
+            content = resp.read()
+            return json.loads(content) if content else {}
+        except urllib.error.HTTPError as e:
+            snippet = e.read().decode(errors="replace")[:300]
+            raise RuntimeError(f"HTTP {e.code} {e.reason} on {method} {path}: {snippet}")
+
+    def get(self, path, **_):
+        return self._raw("GET", path)
 
     def post(self, path, **kw):
-        r = self.session.post(f"{self.host}{path}", **kw)
-        r.raise_for_status()
-        return r.json()
+        return self._raw("POST", path, kw.get("json"))
 
     def put(self, path, **kw):
-        r = self.session.put(f"{self.host}{path}", **kw)
-        r.raise_for_status()
-        return r.json()
+        return self._raw("PUT", path, kw.get("json"))
 
-    def delete(self, path, **kw):
-        r = self.session.delete(f"{self.host}{path}", **kw)
-        if r.status_code != 204:
-            r.raise_for_status()
+    def delete(self, path, **_):
+        self._raw("DELETE", path)
 
 
 def find_database(mb, name_fragment):

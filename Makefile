@@ -137,7 +137,7 @@ inspect-mb:
 # Usage: make check-date DATE=2026-03-10
 check-date:
 	docker compose exec db mysql -u $$MYSQL_USER -p$$MYSQL_PASSWORD $$MYSQL_DATABASE -e \
-	  "SELECT report_date, COUNT(*) rows, SUM(clicks) clicks, SUM(first_depositors) ftds \
+	  "SELECT report_date, COUNT(*) row_count, SUM(clicks) clicks, SUM(first_depositors) ftds \
 	   FROM netrefer_stats \
 	   WHERE report_date = '$(DATE)' \
 	   GROUP BY report_date;"
