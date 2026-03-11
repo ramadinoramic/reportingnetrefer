@@ -114,7 +114,7 @@ audit-csv:
 # Usage: make diagnose
 diagnose:
 	docker compose exec db mysql -u $$MYSQL_USER -p$$MYSQL_PASSWORD $$MYSQL_DATABASE -e \
-	  "SELECT report_date, COUNT(*) rows, SUM(clicks) clicks, SUM(first_depositors) ftds, \
+	  "SELECT report_date, COUNT(*) row_count, SUM(clicks) clicks, SUM(first_depositors) ftds, \
 	   ROUND(SUM(net_revenue),0) net_revenue \
 	   FROM netrefer_stats \
 	   WHERE report_date >= CURDATE() - INTERVAL 30 DAY \
