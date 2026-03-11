@@ -538,11 +538,21 @@ def main():
     parser.add_argument("--user",     required=True)
     parser.add_argument("--password", required=True)
     parser.add_argument("--db-name",  default="netrefer")
+    parser.add_argument("--timezone", default="Europe/Istanbul",
+                        help="Metabase report-timezone (default: Europe/Istanbul / UTC+3)")
     args = parser.parse_args()
 
     print(f"Connecting to {args.host} …")
     mb = MetabaseClient(args.host, args.user, args.password)
     print("  Logged in.")
+
+    # Fix date-picker timezone: Metabase runs in UTC but users are in a different
+    # timezone. Without this, picking "March 10" sends March 9 to the SQL.
+    try:
+        mb.put("/api/setting/report-timezone", json={"value": args.timezone})
+        print(f"  Timezone → {args.timezone}")
+    except Exception as e:
+        print(f"  [warn] Could not set timezone: {e}")
 
     db_id = find_database(mb, args.db_name)
     print(f"  Database id={db_id}")
