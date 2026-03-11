@@ -1,6 +1,6 @@
 .PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard etl-dashboard migrate-key migrate-etl audit-csv watch etl-docker
 
-PYTHON := $(shell command -v python3 || command -v python)
+PYTHON := $(shell test -f venv/bin/python && echo venv/bin/python || command -v python3 || command -v python)
 
 # Install Python dependencies
 setup:
