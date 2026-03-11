@@ -327,24 +327,46 @@ SELECT 'FTDs',                    SUM(first_depositors)          FROM netrefer_s
             tags=both_tags(date_field_id, aff_field_id),
             vis={"graph.dimensions": ["stage"], "graph.metrics": ["total"]}),
 
-        # ── detail table ──────────────────────────────────────────────────
+        # ── affiliate summary table (accumulated across date range) ─────────
+        # Groups by affiliate so a date range shows one row per affiliate,
+        # not one row per day.
         sql_card(db_id, "Affiliate Detail Table", "table", f"""
-SELECT affiliate_name,
-       country,
-       campaign_name,
-       clicks,
-       registrations,
-       first_depositors           AS ftds,
-       ROUND(deposits,    2)      AS deposits,
-       ROUND(net_revenue, 2)      AS net_revenue,
-       ROUND(total_reward,2)      AS commission
+SELECT affiliate_id,
+       affiliate_name,
+       SUM(clicks)                AS clicks,
+       SUM(registrations)         AS registrations,
+       SUM(first_depositors)      AS ftds,
+       ROUND(SUM(deposits),    2) AS deposits,
+       ROUND(SUM(net_revenue), 2) AS net_revenue,
+       ROUND(SUM(total_reward),2) AS commission
 FROM   netrefer_stats
 WHERE  1=1
   AND  (clicks > 0 OR registrations > 0
         OR first_depositors > 0 OR net_revenue != 0)
 {d}
 {a}
+GROUP  BY affiliate_id, affiliate_name
 ORDER  BY net_revenue DESC""",
+            tags=both_tags(date_field_id, aff_field_id)),
+
+        # ── affiliate daily breakdown (one row per day per affiliate) ─────────
+        # Best used with an affiliate selected + a date range.
+        sql_card(db_id, "Affiliate Daily", "table", f"""
+SELECT report_date,
+       affiliate_id,
+       affiliate_name,
+       SUM(clicks)                AS clicks,
+       SUM(registrations)         AS registrations,
+       SUM(first_depositors)      AS ftds,
+       ROUND(SUM(deposits),    2) AS deposits,
+       ROUND(SUM(net_revenue), 2) AS net_revenue,
+       ROUND(SUM(total_reward),2) AS commission
+FROM   netrefer_stats
+WHERE  1=1
+{d}
+{a}
+GROUP  BY report_date, affiliate_id, affiliate_name
+ORDER  BY report_date DESC, net_revenue DESC""",
             tags=both_tags(date_field_id, aff_field_id)),
     ]
 
@@ -365,18 +387,19 @@ LAYOUT = [
     ("Revenue by Country",             8,  8,   8,  8),
     ("Conversion Funnel",              8, 16,   8,  8),
     ("Affiliate Detail Table",        16,  0,  24,  9),
+    ("Affiliate Daily",               25,  0,  24,  9),
 ]
 
 DATE_CARDS = {
     "Data Date", "Clicks", "Registrations", "FTDs", "Net Revenue", "Deposits",
     "Revenue by Country", "Top Affiliates by Revenue",
-    "Conversion Funnel", "Affiliate Detail Table",
+    "Conversion Funnel", "Affiliate Detail Table", "Affiliate Daily",
 }
 AFF_CARDS = {
     "Data Date", "Clicks", "Registrations", "FTDs", "Net Revenue", "Deposits",
     "Daily Conversions (30d)", "Daily Revenue (30d)",
     "Revenue by Country", "Top Affiliates by Revenue",
-    "Conversion Funnel", "Affiliate Detail Table",
+    "Conversion Funnel", "Affiliate Detail Table", "Affiliate Daily",
 }
 
 
