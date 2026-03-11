@@ -461,13 +461,40 @@ def load_to_mysql(records: List[Dict], source: str,
 # Date auto-detection from filename
 # ---------------------------------------------------------------------------
 def date_from_filename(path: Path) -> Optional[date]:
-    """Try to extract a date from the filename, e.g. report_2024-01-31.csv"""
-    match = re.search(r"(\d{4}-\d{2}-\d{2})", path.stem)
-    if match:
+    """Extract a report date from the filename, supporting common formats:
+
+      YYYY-MM-DD  →  report_2024-01-31.csv       (preferred)
+      YYYYMMDD    →  Summary20240131.csv          (Netrefer default export)
+      DD-MM-YYYY  →  report_31-01-2024.csv
+      DD.MM.YYYY  →  report_31.01.2024.csv
+    """
+    stem = path.stem
+
+    # YYYY-MM-DD  (try first — unambiguous)
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})", stem)
+    if m:
         try:
-            return date.fromisoformat(match.group(1))
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
         except ValueError:
             pass
+
+    # YYYYMMDD  (8 consecutive digits not surrounded by more digits)
+    m = re.search(r"(?<!\d)(\d{8})(?!\d)", stem)
+    if m:
+        s = m.group(1)
+        try:
+            return date(int(s[:4]), int(s[4:6]), int(s[6:]))
+        except ValueError:
+            pass
+
+    # DD-MM-YYYY or DD.MM.YYYY
+    m = re.search(r"(\d{2})[-.](\d{2})[-.](\d{4})", stem)
+    if m:
+        try:
+            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            pass
+
     return None
 
 
