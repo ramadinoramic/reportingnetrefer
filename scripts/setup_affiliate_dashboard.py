@@ -244,12 +244,13 @@ def native_fixed(db_id, sql):
 
 
 # affiliate_name is a field filter  → [[AND {{affiliate_name}}]] is dropped when not set
-# from_date / to_date are date vars → Metabase substitutes 'YYYY-MM-DD' directly
+# from_date / to_date are date vars → Metabase may inject ISO 8601 with time/tz suffix;
+# DATE() strips any time component so MySQL compares cleanly against the DATE column.
 WHERE = """
     WHERE 1=1
     [[AND {{affiliate_name}}]]
-    [[AND report_date >= {{from_date}}]]
-    [[AND report_date <= {{to_date}}]]
+    [[AND report_date >= DATE({{from_date}})]]
+    [[AND report_date <= DATE({{to_date}})]]
 """
 
 def card_defs(db_id, affiliate_field_id, engine="postgres"):
