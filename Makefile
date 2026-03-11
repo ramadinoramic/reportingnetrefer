@@ -128,47 +128,10 @@ fix-tz:
 # and show the current timezone setting.
 # Usage: make inspect-mb MB_USER=admin@example.com MB_PASS=secret
 inspect-mb:
-	@python3 - <<'PYEOF'
-import sys, json, urllib.request, urllib.error
-host = "$(or $(HOST),http://localhost:3000)"
-# login
-req = urllib.request.Request(host + "/api/session",
-    data=json.dumps({"username":"$(MB_USER)","password":"$(MB_PASS)"}).encode(),
-    headers={"Content-Type":"application/json"})
-try:
-    tok = json.loads(urllib.request.urlopen(req).read())["id"]
-except Exception as e:
-    print("LOGIN FAILED:", e); sys.exit(1)
-hdrs = {"X-Metabase-Session": tok, "Content-Type": "application/json"}
-def get(path):
-    r = urllib.request.Request(host+path, headers=hdrs)
-    return json.loads(urllib.request.urlopen(r).read())
-# timezone
-try:
-    tz = get("/api/setting/report-timezone")
-    print("=== Metabase report-timezone:", tz.get("value","(not set)"))
-except: print("=== Metabase report-timezone: (could not read)")
-# cards
-cards = get("/api/card")
-af = [c for c in cards if c["name"].startswith("AF –")]
-if not af:
-    print("\nNO 'AF –' cards found — setup script has never been run!")
-    sys.exit(0)
-print(f"\nFound {len(af)} AF cards:\n")
-for c in sorted(af, key=lambda x: x["name"]):
-    sql = c.get("dataset_query",{}).get("native",{}).get("query","(no SQL)")
-    tags = c.get("dataset_query",{}).get("native",{}).get("template-tags",{})
-    has_from = "from_date" in tags
-    has_to   = "to_date"   in tags
-    date_in_sql = "from_date" in sql and "to_date" in sql
-    print(f"  [{c['id']}] {c['name']}")
-    print(f"      tags: from_date={has_from}, to_date={has_to}  |  vars_in_sql={date_in_sql}")
-    if "from_date" in sql:
-        for line in sql.splitlines():
-            if "from_date" in line or "to_date" in line or "report_date" in line:
-                print(f"      SQL: {line.strip()}")
-    print()
-PYEOF
+	python3 scripts/inspect_metabase.py \
+		--host $(or $(HOST),http://localhost:3000) \
+		--user $(MB_USER) \
+		--password $(MB_PASS)
 
 # Check DB data for a specific date directly (bypasses Metabase).
 # Usage: make check-date DATE=2026-03-10
