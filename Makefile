@@ -170,11 +170,13 @@ install-cron:
 # advances the REPORT_CARD sequence past all existing IDs, then restarts.
 # Usage: make reset-mb-h2
 reset-mb-h2:
-	$(eval MB_CONTAINER := $(shell docker ps --filter "publish=3001" --format "{{.Names}}" | head -1))
-	@if [ -z "$(MB_CONTAINER)" ]; then echo "ERROR: no container found on port 3001"; exit 1; fi
+	$(eval MB_CONTAINER := $(shell docker ps -a --filter "name=metabase" --format "{{.Names}}" | grep -v '^$$' | head -1))
+	@if [ -z "$(MB_CONTAINER)" ]; then echo "ERROR: no Metabase container found (expected name containing 'metabase')"; exit 1; fi
 	$(eval MB_VOLUME := $(shell docker inspect $(MB_CONTAINER) --format '{{range .Mounts}}{{if eq .Destination "/metabase-data"}}{{.Name}}{{end}}{{end}}'))
-	@echo "→ Stopping $(MB_CONTAINER) (volume: $(MB_VOLUME)) …"
-	@docker stop $(MB_CONTAINER) > /dev/null
+	@if [ -z "$(MB_VOLUME)" ]; then echo "ERROR: could not find /metabase-data volume on $(MB_CONTAINER)"; exit 1; fi
+	$(eval MB_RUNNING := $(shell docker inspect $(MB_CONTAINER) --format '{{.State.Running}}'))
+	@echo "→ Found $(MB_CONTAINER) (volume: $(MB_VOLUME), running: $(MB_RUNNING))"
+	@if [ "$(MB_RUNNING)" = "true" ]; then docker stop $(MB_CONTAINER) > /dev/null && echo "→ Stopped."; fi
 	@docker run --rm \
 		-v $(MB_VOLUME):/metabase-data \
 		--entrypoint=sh \
