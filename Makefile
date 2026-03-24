@@ -164,3 +164,27 @@ diagnose:
 # Usage: make install-cron EMAIL=you@example.com
 install-cron:
 	@bash scripts/install_cron.sh $(EMAIL)
+
+# Fix Metabase H2 primary-key sequence when re-running dashboard scripts fails
+# with "Unique index or primary key violation" errors.  Stops Metabase briefly,
+# advances the REPORT_CARD sequence past all existing IDs, then restarts.
+# Usage: make reset-mb-h2
+reset-mb-h2:
+	$(eval MB_CONTAINER := $(shell docker ps --filter "publish=3001" --format "{{.Names}}" | head -1))
+	@if [ -z "$(MB_CONTAINER)" ]; then echo "ERROR: no container found on port 3001"; exit 1; fi
+	$(eval MB_VOLUME := $(shell docker inspect $(MB_CONTAINER) --format '{{range .Mounts}}{{if eq .Destination "/metabase-data"}}{{.Name}}{{end}}{{end}}'))
+	@echo "→ Stopping $(MB_CONTAINER) (volume: $(MB_VOLUME)) …"
+	@docker stop $(MB_CONTAINER) > /dev/null
+	@docker run --rm \
+		-v $(MB_VOLUME):/metabase-data \
+		--entrypoint=sh \
+		metabase/metabase:latest \
+		-c "printf 'ALTER TABLE REPORT_CARD ALTER COLUMN ID RESTART WITH 2000;\n' \
+		    > /tmp/fix_seq.sql && \
+		    java -cp /app/metabase.jar org.h2.tools.RunScript \
+		    -url 'jdbc:h2:/metabase-data/metabase' \
+		    -user '' -password '' \
+		    -script /tmp/fix_seq.sql && \
+		    echo 'Sequence reset to 2000 — OK'"
+	@docker start $(MB_CONTAINER) > /dev/null
+	@echo "→ Metabase restarted. Wait ~30 s then re-run your dashboard make target."
