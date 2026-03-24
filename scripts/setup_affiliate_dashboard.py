@@ -151,7 +151,9 @@ def last_7_days_expr(engine):
 
 
 def existing_cards(mb):
-    return {c["name"]: c["id"] for c in mb.get("/api/card")}
+    active   = mb.get("/api/card")
+    archived = mb.get("/api/card?archived=true")
+    return {c["name"]: c["id"] for c in (active + archived)}
 
 
 def existing_dashboards(mb):
@@ -587,6 +589,7 @@ def main():
             "display":                card["display"],
             "dataset_query":          card["dataset_query"],
             "visualization_settings": card.get("visualization_settings", {}),
+            "archived":               False,
         }
         if name in existing:
             card_id = existing[name]
