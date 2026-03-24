@@ -182,7 +182,7 @@ reset-mb-h2:
 		-c "printf 'ALTER TABLE REPORT_CARD ALTER COLUMN ID RESTART WITH 2000;\n' \
 		    > /tmp/fix_seq.sql && \
 		    java -cp /app/metabase.jar org.h2.tools.RunScript \
-		    -url 'jdbc:h2:/metabase-data/metabase.db' \
+		    -url 'jdbc:h2:/metabase-data/metabase' \
 		    -user '' -password '' \
 		    -script /tmp/fix_seq.sql && \
 		    echo 'Sequence reset to 2000 — OK'"
