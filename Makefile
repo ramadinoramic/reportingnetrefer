@@ -1,4 +1,4 @@
-.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard etl-dashboard migrate-key migrate-etl audit-csv watch etl-docker diagnose
+.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard channel-dashboard etl-dashboard migrate-key migrate-etl audit-csv watch etl-docker diagnose
 
 # Load .env so make targets can use MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE etc.
 -include .env
@@ -54,6 +54,15 @@ board-report:
 board-dashboard:
 	$(PYTHON) scripts/setup_board_dashboard.py \
 		--host $(or $(HOST),http://localhost:3000) \
+		--user $(MB_USER) \
+		--password $(MB_PASS) \
+		$(if $(DB_NAME),--db-name $(DB_NAME),)
+
+# Create / update the Channel & Affiliate Overview dashboard in Metabase
+# Usage: make channel-dashboard MB_USER=admin@example.com MB_PASS=secret
+channel-dashboard:
+	$(PYTHON) scripts/setup_channel_dashboard.py \
+		--host $(or $(HOST),http://localhost:3001) \
 		--user $(MB_USER) \
 		--password $(MB_PASS) \
 		$(if $(DB_NAME),--db-name $(DB_NAME),)
