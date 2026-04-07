@@ -1,4 +1,4 @@
-.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard channel-dashboard etl-dashboard migrate-key migrate-etl audit-csv watch etl-docker diagnose
+.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard channel-dashboard etl-dashboard source-trend migrate-key migrate-etl audit-csv watch etl-docker diagnose
 
 # Load .env so make targets can use MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE etc.
 -include .env
@@ -35,6 +35,19 @@ load-dir:
 # Load a single file: make load FILE=drop/netrefer_2024-01-31.csv
 load:
 	$(PYTHON) etl/netrefer_etl.py --file $(FILE)
+
+# Detect which traffic sources (channels) are dropping in clicks / regs / FTDs.
+# Compares last 3 / 7 / 15 days vs the same-length prior window.
+# Examples:
+#   make source-trend                                  ← terminal output only
+#   make source-trend OUTPUT=drop/trend.html           ← save HTML report
+#   make source-trend OUTPUT=drop/trend.html OPEN=1    ← save + open in browser
+#   make source-trend TODAY=2026-03-17                 ← pin anchor date
+source-trend:
+	$(PYTHON) scripts/source_trend_report.py \
+		$(if $(OUTPUT),--output $(OUTPUT),) \
+		$(if $(TODAY),--today $(TODAY),) \
+		$(if $(OPEN),--open,)
 
 # Generate C-Level / Board HTML report
 # Examples:
