@@ -1,4 +1,4 @@
-.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard channel-dashboard etl-dashboard trend-dashboard source-trend migrate-key migrate-etl audit-csv watch etl-docker diagnose
+.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard channel-dashboard etl-dashboard trend-dashboard leaderboard-dashboard source-trend migrate-key migrate-etl audit-csv watch etl-docker diagnose
 
 # Load .env so make targets can use MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE etc.
 -include .env
@@ -35,6 +35,15 @@ load-dir:
 # Load a single file: make load FILE=drop/netrefer_2024-01-31.csv
 load:
 	$(PYTHON) etl/netrefer_etl.py --file $(FILE)
+
+# Create / update the Performance Leaderboard dashboard in Metabase
+# Usage: make leaderboard-dashboard MB_USER=admin@example.com MB_PASS=secret
+leaderboard-dashboard:
+	$(PYTHON) scripts/setup_leaderboard_dashboard.py \
+		--host $(or $(HOST),http://localhost:3001) \
+		--user $(MB_USER) \
+		--password $(MB_PASS) \
+		$(if $(DB_NAME),--db-name $(DB_NAME),)
 
 # Create / update the Source Drop Detection dashboard in Metabase
 # Usage: make trend-dashboard MB_USER=admin@example.com MB_PASS=secret
