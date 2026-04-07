@@ -393,21 +393,20 @@ def main():
             card_name_to_id[name] = result["id"]
             print(f"  [created] {name} (id={result['id']})")
 
-    # Archive old dashboard if exists, create fresh
     dash_name = "Source Drop Detection"
     existing_dashes = existing_dashboards(mb)
     if dash_name in existing_dashes:
-        old_id = existing_dashes[dash_name]
-        print(f"\n[archiving] Old '{dash_name}' (id={old_id}) …")
-        mb.put(f"/api/dashboard/{old_id}", json={"archived": True})
-
-    dash = mb.post("/api/dashboard", json={
-        "name":        dash_name,
-        "description": "Which sources are dropping? Compares last 3 / 7 / 15 days vs prior same-length window. Sorted worst-first.",
-        "parameters":  [],
-    })
-    dash_id = dash["id"]
-    print(f"\n[created] Dashboard '{dash_name}' (id={dash_id})")
+        dash_id = existing_dashes[dash_name]
+        print(f"\n[updating] Dashboard '{dash_name}' in-place (id={dash_id})")
+        mb.put(f"/api/dashboard/{dash_id}", json={"parameters": [], "dashcards": []})
+    else:
+        dash = mb.post("/api/dashboard", json={
+            "name":        dash_name,
+            "description": "Which sources are dropping? Compares last 3 / 7 / 15 days vs prior same-length window. Sorted worst-first.",
+            "parameters":  [],
+        })
+        dash_id = dash["id"]
+        print(f"\n[created] Dashboard '{dash_name}' (id={dash_id})")
 
     dashcards = build_dashcards(card_name_to_id)
     mb.put(f"/api/dashboard/{dash_id}", json={

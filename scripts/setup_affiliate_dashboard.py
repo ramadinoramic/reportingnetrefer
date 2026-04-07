@@ -606,24 +606,21 @@ def main():
         {"id": PARAM_TO_DATE,    "name": "To Date",        "slug": "to_date",        "type": "date/single"},
     ]
 
-    # Delete the existing dashboard so stale dashcard/parameter mappings are cleared
     dash_name = "Affiliate Deep Dive"
     existing_dashes = existing_dashboards(mb)
 
     if dash_name in existing_dashes:
-        old_id = existing_dashes[dash_name]
-        print(f"\n[deleting] Old dashboard '{dash_name}' (id={old_id}) to clear stale state …")
-        mb.put(f"/api/dashboard/{old_id}", json={"archived": True})
-        print(f"  Archived.")
-
-    # Always create a fresh dashboard so parameter mappings are clean
-    dash = mb.post("/api/dashboard", json={
-        "name":        dash_name,
-        "description": "Per-affiliate KPIs, trends and breakdown — use filters to drill down",
-        "parameters":  dashboard_params,
-    })
-    dash_id = dash["id"]
-    print(f"\n[created] Dashboard '{dash_name}' (id={dash_id})")
+        dash_id = existing_dashes[dash_name]
+        print(f"\n[updating] Dashboard '{dash_name}' in-place (id={dash_id})")
+        mb.put(f"/api/dashboard/{dash_id}", json={"parameters": dashboard_params, "dashcards": []})
+    else:
+        dash = mb.post("/api/dashboard", json={
+            "name":        dash_name,
+            "description": "Per-affiliate KPIs, trends and breakdown — use filters to drill down",
+            "parameters":  dashboard_params,
+        })
+        dash_id = dash["id"]
+        print(f"\n[created] Dashboard '{dash_name}' (id={dash_id})")
 
     dashcards = build_dashcards(card_name_to_id, card_no_params, card_detail_params)
     print("  Wiring cards …")

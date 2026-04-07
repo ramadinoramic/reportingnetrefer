@@ -500,17 +500,18 @@ def main():
     dash_name = "Channel & Affiliate Overview"
     existing_dashes = existing_dashboards(mb)
     if dash_name in existing_dashes:
-        old_id = existing_dashes[dash_name]
-        print(f"\n[archiving] Old '{dash_name}' (id={old_id}) …")
-        mb.put(f"/api/dashboard/{old_id}", json={"archived": True})
-
-    dash = mb.post("/api/dashboard", json={
-        "name":        dash_name,
-        "description": "Channel and affiliate performance — KPIs, daily trends, channel breakdowns",
-        "parameters":  dashboard_params,
-    })
-    dash_id = dash["id"]
-    print(f"\n[created] Dashboard '{dash_name}' (id={dash_id})")
+        dash_id = existing_dashes[dash_name]
+        print(f"\n[updating] Dashboard '{dash_name}' in-place (id={dash_id}) — URL stays the same")
+        # Clear existing dashcards first so stale cards/mappings are removed
+        mb.put(f"/api/dashboard/{dash_id}", json={"parameters": dashboard_params, "dashcards": []})
+    else:
+        dash = mb.post("/api/dashboard", json={
+            "name":        dash_name,
+            "description": "Channel and affiliate performance — KPIs, daily trends, channel breakdowns",
+            "parameters":  dashboard_params,
+        })
+        dash_id = dash["id"]
+        print(f"\n[created] Dashboard '{dash_name}' (id={dash_id})")
 
     dashcards = build_dashcards(card_name_to_id)
     mb.put(f"/api/dashboard/{dash_id}", json={
