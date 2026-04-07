@@ -212,12 +212,12 @@ reset-mb-h2:
 		-v $(MB_VOLUME):/metabase-data \
 		--entrypoint=sh \
 		metabase/metabase:latest \
-		-c "printf 'ALTER TABLE REPORT_CARD ALTER COLUMN ID RESTART WITH 10000;\nALTER TABLE REPORT_DASHBOARD ALTER COLUMN ID RESTART WITH 10000;\nALTER TABLE REPORT_DASHBOARDCARD ALTER COLUMN ID RESTART WITH 10000;\n' \
+		-c "printf 'ALTER TABLE REPORT_CARD ALTER COLUMN ID RESTART WITH 20000;\nALTER TABLE REPORT_DASHBOARD ALTER COLUMN ID RESTART WITH 20000;\nALTER TABLE REPORT_DASHBOARDCARD ALTER COLUMN ID RESTART WITH 20000;\n' \
 		    > /tmp/fix_seq.sql && \
 		    java -cp /app/metabase.jar org.h2.tools.RunScript \
 		    -url 'jdbc:h2:/metabase-data/metabase.db/metabase.db' \
 		    -user '' -password '' \
 		    -script /tmp/fix_seq.sql && \
-		    echo 'Sequences reset to 10000 — OK'"
+		    echo 'Sequences reset to 20000 — OK'"
 	@docker start $(MB_CONTAINER) > /dev/null
 	@echo "→ Metabase restarted. Wait ~30 s then re-run your dashboard make target."
