@@ -9,24 +9,18 @@ Send a message like:
   "show me FTDs trend for last 7 days"
   "compare this week vs last week"
 
-The bot uses Claude API to parse your intent, then runs safe pre-defined
-queries against the MySQL database and replies with formatted results.
-
 Setup (add to .env):
   TELEGRAM_BOT_TOKEN=...         from @BotFather
   TELEGRAM_ALLOWED_USERS=123,456  your Telegram user ID(s), from @userinfobot
-  ANTHROPIC_API_KEY=...           from console.anthropic.com
 """
 
-import asyncio
-import json
 import logging
 import os
+import re
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from typing import Dict, List, Optional, Tuple
 
-import anthropic
 import mysql.connector
 from dotenv import load_dotenv
 from telegram import Update
@@ -44,12 +38,9 @@ log = logging.getLogger(__name__)
 # Config
 # ──────────────────────────────────────────────
 
-TELEGRAM_TOKEN   = os.environ["TELEGRAM_BOT_TOKEN"]
-ANTHROPIC_KEY    = os.environ["ANTHROPIC_API_KEY"]
-_raw_users       = os.getenv("TELEGRAM_ALLOWED_USERS", "")
-ALLOWED_USERS    = {int(u.strip()) for u in _raw_users.split(",") if u.strip()}
-
-ai = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+TELEGRAM_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+_raw_users     = os.getenv("TELEGRAM_ALLOWED_USERS", "")
+ALLOWED_USERS  = {int(u.strip()) for u in _raw_users.split(",") if u.strip()}
 
 
 # ──────────────────────────────────────────────
@@ -278,64 +269,115 @@ def specific_affiliate(cursor, d_from: date, d_to: date, name: str) -> List[Dict
 
 
 # ──────────────────────────────────────────────
-# Intent parsing via Claude
+# Intent parsing — keyword-based (no external API needed)
 # ──────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are a query parser for an affiliate marketing reporting database.
-
-The database tracks daily affiliate performance. Key dimensions:
-- affiliate_name: name of the affiliate partner
-- campaign_name: raw traffic source/campaign
-- channel groups (computed from affiliate_id): CPA/CPL, Direct, MB in-house, MB outsourced, SEO, Influencers, Social, Affiliates
-
-Key metrics:
-- clicks: raw traffic clicks
-- regs / registrations: new sign-ups
-- ftds / first_depositors: first-time depositors (most important KPI)
-- ngr / net_revenue: net gaming revenue (EUR)
-- ggr / gross_revenue: gross gaming revenue (EUR)
-- commission / total_reward: affiliate commission paid
-
-Parse the user's message and return ONLY valid JSON (no explanation, no markdown):
-{
-  "intent": <one of: kpi_summary | top_performers | channel_breakdown | trend | specific_affiliate | drops | comparison | help>,
-  "period": <one of: today | yesterday | last_7_days | last_30_days | this_week | last_week | this_month | last_month>,
-  "metric": <one of: ftds | clicks | regs | ngr | ggr | commission>,
-  "limit": <integer 1-20, default 5>,
-  "filter_affiliate": <affiliate name string or null>,
-  "filter_channel": <channel group name or null>
-}
-
-Rules:
-- Default period is "yesterday" if not specified
-- Default metric is "ftds" if not specified
-- "top performer" means top_performers intent by ftds
-- "dropping" or "declining" or "getting worse" means drops intent
-- "trend" or "daily" or "day by day" means trend intent
-- "compare" or "vs" or "versus" means comparison intent
-- If unclear, use kpi_summary intent
-- For greetings or help questions, use help intent"""
+# Known channel group names for specific_affiliate detection
+CHANNEL_NAMES = {"cpa", "cpas", "cpl", "direct", "mb", "seo",
+                 "influencer", "influencers", "social", "affiliates",
+                 "mb in-house", "mb outsourced", "unattributed"}
 
 
 def parse_intent(message: str) -> Dict:
-    try:
-        resp = ai.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=256,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": message}],
+    """Parse a free-text message into a structured intent dict using keyword matching."""
+    t = message.lower()
+
+    # ── Period ──────────────────────────────────
+    period = "yesterday"  # default
+    if re.search(r"\btoday\b|\blatest\b|\blast data\b", t):
+        period = "today"
+    elif re.search(r"\byesterday\b", t):
+        period = "yesterday"
+    elif re.search(r"\blast\s+30\s+days?\b|\bpast\s+30\b|\bmonthly\b", t):
+        period = "last_30_days"
+    elif re.search(r"\blast\s+7\s+days?\b|\bpast\s+7\b|\bweekly\b|\blast\s+week\b", t):
+        period = "last_7_days"
+    elif re.search(r"\blast\s+week\b", t):
+        period = "last_week"
+    elif re.search(r"\bthis\s+week\b", t):
+        period = "this_week"
+    elif re.search(r"\bthis\s+month\b", t):
+        period = "this_month"
+    elif re.search(r"\blast\s+month\b", t):
+        period = "last_month"
+
+    # ── Metric ──────────────────────────────────
+    metric = "ftds"  # default
+    if re.search(r"\bngr\b|\bnet\s+rev|\bnet\s+gaming\b", t):
+        metric = "ngr"
+    elif re.search(r"\bggr\b|\bgross\s+rev|\bgross\s+gaming\b", t):
+        metric = "ggr"
+    elif re.search(r"\bclick", t):
+        metric = "clicks"
+    elif re.search(r"\breg(istration)?s?\b|\bsign.?up", t):
+        metric = "regs"
+    elif re.search(r"\bcommission|\breward\b|\bcost\b", t):
+        metric = "commission"
+
+    # ── Limit ───────────────────────────────────
+    limit = 5
+    m = re.search(r"\btop\s+(\d+)\b", t)
+    if m:
+        limit = min(int(m.group(1)), 20)
+
+    # ── Intent ──────────────────────────────────
+    # Drops/declines
+    if re.search(r"\bdrop|\bdeclin|\bfall(ing)?\b|\bwors(t|e)\b|\bbad(dest)?\b|\bdown\b", t):
+        intent = "drops"
+
+    # Comparison
+    elif re.search(r"\bvs\b|\bversus\b|\bcompar|\bvsus\b|\bwow\b|\bweek.over", t):
+        intent = "comparison"
+
+    # Trend / daily
+    elif re.search(r"\btrend\b|\bdaily\b|\bday.by.day\b|\bover.time\b|\bper.day\b|\bevolution\b", t):
+        intent = "trend"
+
+    # Channel breakdown
+    elif re.search(r"\bchannel\b|\bsource\b|\bbreakdown\b|\bsegment\b", t):
+        intent = "channel_breakdown"
+
+    # Top performers
+    elif re.search(r"\btop\b|\bbest\b|\bleader\b|\branking\b|\brank\b|\bperform\b|\bwho\b", t):
+        intent = "top_performers"
+
+    # Help / greeting
+    elif re.search(r"\bhelp\b|\bhi\b|\bhello\b|\bhey\b|\bwhat can\b|\bcommand", t):
+        intent = "help"
+
+    # Specific affiliate by name — check if a known channel keyword is present
+    # or if there's a proper-noun-style phrase after "show me" / "how is"
+    else:
+        aff_match = re.search(r"(?:show me|how is|stats for|about)\s+(.+?)(?:\s+(?:today|yesterday|last|this|stats|data|numbers?)|\?|$)", t)
+        if aff_match:
+            candidate = aff_match.group(1).strip()
+            if len(candidate) >= 2:
+                intent = "specific_affiliate"
+            else:
+                intent = "kpi_summary"
+        else:
+            intent = "kpi_summary"
+
+    # ── filter_affiliate for specific_affiliate ──
+    filter_affiliate = None
+    filter_channel   = None
+    if intent == "specific_affiliate":
+        aff_match = re.search(
+            r"(?:show me|how is|stats for|about)\s+(.+?)(?:\s+(?:today|yesterday|last|this|stats|data|numbers?)|\?|$)", t
         )
-        text = resp.content[0].text.strip()
-        # strip markdown code fences if present
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-        return json.loads(text)
-    except Exception as e:
-        log.warning(f"Intent parse failed: {e}")
-        return {"intent": "kpi_summary", "period": "yesterday", "metric": "ftds",
-                "limit": 5, "filter_affiliate": None, "filter_channel": None}
+        if aff_match:
+            filter_affiliate = aff_match.group(1).strip()
+
+    result = {
+        "intent":           intent,
+        "period":           period,
+        "metric":           metric,
+        "limit":            limit,
+        "filter_affiliate": filter_affiliate,
+        "filter_channel":   filter_channel,
+    }
+    log.info(f"Parsed intent: {result}")
+    return result
 
 
 # ──────────────────────────────────────────────
