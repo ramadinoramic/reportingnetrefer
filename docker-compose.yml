@@ -36,7 +36,7 @@ services:
   metabase:
     image: metabase/metabase:latest
     ports:
-      - "3001:3000"
+      - "127.0.0.1:3001:3000"   # loopback only — not reachable from outside
     environment:
       MB_DB_TYPE: h2
       MB_DB_FILE: /metabase-data/metabase.db
@@ -45,6 +45,15 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - metabase
     restart: unless-stopped
 
 volumes:
