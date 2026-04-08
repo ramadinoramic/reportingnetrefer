@@ -57,11 +57,17 @@ ai = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 # ──────────────────────────────────────────────
 
 def db_conn():
+    # MYSQL_BOT_USER/MYSQL_BOT_PASSWORD allow the bot service to use root
+    # credentials (set in docker-compose.yml) while the ETL still uses its
+    # own restricted user.  Falls back to MYSQL_USER/MYSQL_PASSWORD if the
+    # bot-specific vars are not set.
+    user     = os.environ.get("MYSQL_BOT_USER")     or os.environ["MYSQL_USER"]
+    password = os.environ.get("MYSQL_BOT_PASSWORD") or os.environ["MYSQL_PASSWORD"]
     return mysql.connector.connect(
         host=os.environ["MYSQL_HOST"],
         port=int(os.getenv("MYSQL_PORT", 3306)),
-        user=os.environ["MYSQL_USER"],
-        password=os.environ["MYSQL_PASSWORD"],
+        user=user,
+        password=password,
         database=os.environ["MYSQL_DATABASE"],
         charset="utf8mb4",
     )
@@ -579,7 +585,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         log.error(f"DB error: {e}", exc_info=True)
-        reply = f"⚠️ Error querying the database: {e}"
+        # Send error without Markdown parse mode — error text may contain
+        # underscores, backticks etc. that break Telegram's Markdown parser.
+        await update.message.reply_text(f"⚠️ Error querying the database:\n{e}")
+        return
 
     await update.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
 
