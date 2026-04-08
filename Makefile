@@ -1,4 +1,4 @@
-.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard channel-dashboard etl-dashboard trend-dashboard leaderboard-dashboard source-trend migrate-key migrate-etl audit-csv watch etl-docker diagnose
+.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard channel-dashboard etl-dashboard trend-dashboard leaderboard-dashboard source-trend telegram-bot migrate-key migrate-etl audit-csv watch etl-docker diagnose
 
 # Load .env so make targets can use MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE etc.
 -include .env
@@ -53,6 +53,10 @@ trend-dashboard:
 		--user $(MB_USER) \
 		--password $(MB_PASS) \
 		$(if $(DB_NAME),--db-name $(DB_NAME),)
+
+# Run the Telegram reporting bot locally (uses .env for all credentials)
+telegram-bot:
+	$(PYTHON) scripts/telegram_bot.py
 
 # Detect which traffic sources (channels) are dropping in clicks / regs / FTDs.
 # Compares last 3 / 7 / 15 days vs the same-length prior window.
