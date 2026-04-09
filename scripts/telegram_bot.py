@@ -580,14 +580,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Connect to DB
     try:
-        conn   = db_conn()
-        cursor = conn.cursor()
-        anchor = latest_date(cursor)
-        if anchor is None:
+        conn       = db_conn()
+        cursor     = conn.cursor()
+        latest     = latest_date(cursor)      # most recent date in the DB
+        real_today = date.today()
+
+        if latest is None:
             await update.message.reply_text("⚠️ No data in the database yet.")
             return
 
-        d_from, d_to = resolve_period(period, anchor)
+        # Resolve the requested period against the real calendar date so that
+        # "yesterday" always means literally yesterday, not "one day before the
+        # latest row in the DB" (which can lag by a day or more).
+        # The special tokens "today" and "latest" still return the most recent
+        # available data so they always show something useful.
+        if period in ("today", "latest"):
+            d_from, d_to = latest, latest
+        else:
+            d_from, d_to = resolve_period(period, real_today)
 
         # Execute intent
         if intent == "top_performers":
@@ -604,8 +614,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif intent == "drops":
             days  = {"last_7_days": 7, "last_30_days": 15, "last_3_days": 3}.get(period, 7)
-            rows  = source_drops(cursor, anchor, days=days)
-            reply = format_drops(rows, days, anchor)
+            rows  = source_drops(cursor, latest, days=days)
+            reply = format_drops(rows, days, latest)
 
         elif intent == "comparison":
             pf, pt = prior_period(d_from, d_to)
