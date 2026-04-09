@@ -23,9 +23,16 @@ from typing import Dict, List, Optional, Tuple
 
 import mysql.connector
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 load_dotenv()
 logging.basicConfig(
@@ -646,6 +653,113 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ──────────────────────────────────────────────
+# Quick-access menu (inline keyboard)
+# ──────────────────────────────────────────────
+
+MENU_KEYBOARD = InlineKeyboardMarkup([
+    [
+        InlineKeyboardButton("📊 Summary yesterday",   callback_data="kpi_summary|yesterday"),
+        InlineKeyboardButton("📊 Summary this week",   callback_data="kpi_summary|this_week"),
+    ],
+    [
+        InlineKeyboardButton("🏆 Top performers",      callback_data="top_performers|yesterday"),
+        InlineKeyboardButton("🏆 Top — last 7d",       callback_data="top_performers|last_7_days"),
+    ],
+    [
+        InlineKeyboardButton("📡 Channels yesterday",  callback_data="channel_breakdown|yesterday"),
+        InlineKeyboardButton("📡 Channels this week",  callback_data="channel_breakdown|this_week"),
+    ],
+    [
+        InlineKeyboardButton("📈 Trend last 7d",       callback_data="trend|last_7_days"),
+        InlineKeyboardButton("📈 Trend this month",    callback_data="trend|this_month"),
+    ],
+    [
+        InlineKeyboardButton("⚠️ Who is dropping?",   callback_data="drops|last_7_days"),
+        InlineKeyboardButton("🔄 Week vs last week",   callback_data="comparison|this_week"),
+    ],
+])
+
+
+async def show_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for /menu and /start commands."""
+    user = update.effective_user
+    if ALLOWED_USERS and user.id not in ALLOWED_USERS:
+        return
+    await update.message.reply_text(
+        "Choose a report:",
+        reply_markup=MENU_KEYBOARD,
+    )
+
+
+async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline keyboard button presses."""
+    query = update.callback_query
+    await query.answer()          # acknowledge the tap immediately
+
+    user = query.from_user
+    if ALLOWED_USERS and user.id not in ALLOWED_USERS:
+        return
+
+    # callback_data format: "intent|period"
+    parts  = (query.data or "").split("|", 1)
+    intent = parts[0] if parts else "kpi_summary"
+    period = parts[1] if len(parts) > 1 else "yesterday"
+    metric = "ftds"
+    limit  = 5
+
+    log.info(f"Button: {query.data} from user {user.id}")
+
+    await context.bot.send_chat_action(chat_id=query.message.chat_id, action="typing")
+
+    try:
+        conn       = db_conn()
+        cursor     = conn.cursor()
+        latest     = latest_date(cursor)
+        real_today = date.today()
+
+        if latest is None:
+            await query.message.reply_text("⚠️ No data in the database yet.")
+            return
+
+        if period in ("today", "latest"):
+            d_from, d_to = latest, latest
+        else:
+            d_from, d_to = resolve_period(period, real_today)
+
+        if intent == "top_performers":
+            rows  = top_affiliates(cursor, d_from, d_to, metric=metric, limit=limit)
+            reply = format_top_affiliates(rows, metric, d_from, d_to)
+        elif intent == "channel_breakdown":
+            rows  = channel_breakdown(cursor, d_from, d_to)
+            reply = format_channel_breakdown(rows, d_from, d_to)
+        elif intent == "trend":
+            rows  = daily_trend(cursor, d_from, d_to)
+            reply = format_trend(rows, d_from, d_to)
+        elif intent == "drops":
+            days  = {"last_7_days": 7, "last_30_days": 15}.get(period, 7)
+            rows  = source_drops(cursor, latest, days=days)
+            reply = format_drops(rows, days, latest)
+        elif intent == "comparison":
+            pf, pt = prior_period(d_from, d_to)
+            cur    = kpi_summary(cursor, d_from, d_to)
+            prev   = kpi_summary(cursor, pf, pt)
+            reply  = format_comparison(cur, prev, d_from, d_to)
+        else:
+            data  = kpi_summary(cursor, d_from, d_to)
+            reply = format_kpi_summary(data, d_from, d_to)
+
+        cursor.close()
+        conn.close()
+
+    except Exception as e:
+        log.error(f"Button query error: {e}", exc_info=True)
+        await query.message.reply_text(f"⚠️ Error:\n{e}")
+        return
+
+    await query.message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
+
+
+# ──────────────────────────────────────────────
 # Entry point
 # ──────────────────────────────────────────────
 
@@ -658,6 +772,8 @@ def main():
 
     log.info(f"Starting bot (allowed users: {ALLOWED_USERS or 'ALL'})")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler(["start", "menu"], show_menu))
+    app.add_handler(CallbackQueryHandler(handle_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     log.info("Bot started, polling...")
     app.run_polling(drop_pending_updates=True)
