@@ -1,4 +1,4 @@
-.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard channel-dashboard etl-dashboard trend-dashboard leaderboard-dashboard source-trend telegram-bot migrate-key migrate-etl audit-csv watch etl-docker diagnose
+.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard channel-dashboard etl-dashboard trend-dashboard leaderboard-dashboard source-trend telegram-bot migrate-key migrate-etl audit-csv watch watch-once etl-docker diagnose reprocess
 
 # Load .env so make targets can use MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE etc.
 -include .env
@@ -185,6 +185,13 @@ check-date:
 	   FROM netrefer_stats \
 	   WHERE report_date = '$(DATE)' \
 	   GROUP BY report_date;"
+
+# Force-reprocess a file that was already loaded (clears etl_runs record so the watcher picks it up again)
+# Usage: make reprocess FILE=netrefer_2026-04-08.csv
+reprocess:
+	docker compose exec db mysql -u root -p$$MYSQL_ROOT_PASSWORD $$MYSQL_DATABASE -e \
+	  "DELETE FROM etl_runs WHERE source_detail = '$(FILE)';"
+	@echo "Cleared ETL record for $(FILE) — watcher will reprocess within 60 s"
 
 # Show ETL load history for recent dates — tells you what filename/date each CSV was loaded as
 # Usage: make audit-etl
