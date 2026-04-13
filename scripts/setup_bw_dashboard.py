@@ -6,10 +6,10 @@ Creates (or updates in-place) a dashboard for a single brand showing:
   Row 0 – KPI scalars: FTDs, Registrations, Clicks, NGR, Commission
   Row 1 – Daily FTDs trend (line)
   Row 2 – FTDs by Geo (horizontal bar)  |  NGR by Geo (horizontal bar)
-  Row 3 – Top Affiliates by FTDs (horizontal bar)
+  Row 3 – Top Affiliates by FTDs (bar)  |  Top Affiliates by Signups (bar)
   Row 4 – Full affiliate performance table
 
-Filters: From Date, To Date, Geo, Affiliate Name
+Filters: From Date, To Date, Geo (dropdown), Affiliate (dropdown)
 
 Usage:
     python scripts/setup_bw_dashboard.py --brand Bahigo \\
@@ -66,6 +66,51 @@ def find_database(mb, name_fragment):
     raise RuntimeError(f"No database matching '{name_fragment}'")
 
 
+def find_field_id(mb, db_id, table_name, field_name):
+    """Try multiple Metabase API endpoints to find a field's numeric ID."""
+    try:
+        fields = mb.get(f"/api/database/{db_id}/fields")
+        for f in fields:
+            if (f.get("table_name", "").lower() == table_name
+                    and f.get("name", "").lower() == field_name):
+                print(f"  {table_name}.{field_name} field id={f['id']}")
+                return f["id"]
+    except Exception:
+        pass
+    try:
+        meta = mb.get(f"/api/database/{db_id}/metadata")
+        for table in meta.get("tables", []):
+            if table["name"].lower() == table_name:
+                for field in table.get("fields", []):
+                    if field["name"].lower() == field_name:
+                        print(f"  {table_name}.{field_name} field id={field['id']}")
+                        return field["id"]
+    except Exception:
+        pass
+    try:
+        tables = mb.get("/api/table")
+        for t in tables:
+            if t["name"].lower() == table_name and t.get("db_id") == db_id:
+                tmeta = mb.get(f"/api/table/{t['id']}/query_metadata")
+                for field in tmeta.get("fields", []):
+                    if field["name"].lower() == field_name:
+                        print(f"  {table_name}.{field_name} field id={field['id']}")
+                        return field["id"]
+    except Exception:
+        pass
+    raise RuntimeError(
+        f"Could not find field '{field_name}' in table '{table_name}'.\n"
+        "Run Admin → Databases → Sync database schema now, then retry."
+    )
+
+
+def configure_field_for_dropdown(mb, field_id):
+    """Tell Metabase to scan & cache values so the filter shows a dropdown."""
+    mb.put(f"/api/field/{field_id}", json={"has_field_values": "list"})
+    mb.post(f"/api/field/{field_id}/rescan_values")
+    print(f"  Field {field_id}: has_field_values=list, rescan triggered.")
+
+
 def existing_cards(mb):
     active = mb.get("/api/card")
     try:
@@ -98,7 +143,35 @@ def _extract_tags(sql: str) -> dict:
     return tags
 
 
-def upsert_card(mb, db_id, name, sql, display, viz_settings, existing):
+def _build_dim_tags(sql: str, geo_field_id: int, aff_field_id: int) -> dict:
+    """
+    Build template-tags for a card.  geo and affiliate_name become field filters
+    (type=dimension) so Metabase generates the WHERE clause and shows a dropdown.
+    All other tags are auto-extracted as text / date variables.
+    """
+    tags = _extract_tags(sql)
+    if "geo" in tags:
+        tags["geo"] = {
+            "id":           "geo",
+            "name":         "geo",
+            "display-name": "Geo",
+            "type":         "dimension",
+            "dimension":    ["field", geo_field_id, None],
+            "widget-type":  "string/=",
+        }
+    if "affiliate_name" in tags:
+        tags["affiliate_name"] = {
+            "id":           "affiliate_name",
+            "name":         "affiliate_name",
+            "display-name": "Affiliate Name",
+            "type":         "dimension",
+            "dimension":    ["field", aff_field_id, None],
+            "widget-type":  "string/=",
+        }
+    return tags
+
+
+def upsert_card(mb, db_id, name, sql, display, viz_settings, existing, tags=None):
     payload = {
         "name":    name,
         "display": display,
@@ -107,7 +180,7 @@ def upsert_card(mb, db_id, name, sql, display, viz_settings, existing):
             "database": db_id,
             "native": {
                 "query":         sql,
-                "template-tags": _extract_tags(sql),
+                "template-tags": tags if tags is not None else _extract_tags(sql),
             },
         },
         "visualization_settings": viz_settings or {},
@@ -131,12 +204,13 @@ def upsert_card(mb, db_id, name, sql, display, viz_settings, existing):
 def build_queries(brand: str) -> dict:
     B = brand
 
-    # Note: geo uses [[AND geo = '{{geo}}']] — single quotes required so Metabase
-    # injects the text value as a properly quoted SQL string literal.
+    # geo and affiliate_name use dimension (field) filters.
+    # Metabase generates the full "column = value" SQL from {{geo}} / {{affiliate_name}}.
+    # Do NOT write geo = {{geo}} — the column reference is injected automatically.
     WHERE = f"""
     WHERE brand_name = '{B}'
-      [[AND geo            = '{{{{geo}}}}']]
-      [[AND affiliate_name LIKE {{{{affiliate_name}}}}]]
+      [[AND {{{{geo}}}}]]
+      [[AND {{{{affiliate_name}}}}]]
       [[AND report_date   >= {{{{from_date}}}}]]
       [[AND report_date   <= {{{{to_date}}}}]]"""
 
@@ -200,6 +274,18 @@ def build_queries(brand: str) -> dict:
             ORDER BY ftds DESC
             LIMIT 15
         """,
+        "top_affiliates_signup": f"""
+            SELECT affiliate_name,
+                   SUM(registrations)          AS regs,
+                   SUM(first_depositors)       AS ftds,
+                   ROUND(SUM(net_revenue),  0) AS ngr,
+                   ROUND(SUM(first_depositors)*100.0/NULLIF(SUM(registrations),0),1) AS ftd_rate_pct
+            FROM bahigo_wettigo_stats
+            {WHERE}
+            GROUP BY affiliate_name
+            ORDER BY regs DESC
+            LIMIT 15
+        """,
         "scorecard": f"""
             SELECT affiliate_name,
                    geo,
@@ -225,35 +311,41 @@ def build_queries(brand: str) -> dict:
 def _params(brand):
     B = brand.lower()[:2]
     return [
-        {"id": f"{B}-from-date",      "name": "From Date",  "slug": "from_date",      "type": "date/single"},
-        {"id": f"{B}-to-date",        "name": "To Date",    "slug": "to_date",        "type": "date/single"},
-        {"id": f"{B}-geo",            "name": "Geo",        "slug": "geo",            "type": "category"},
-        {"id": f"{B}-affiliate-name", "name": "Affiliate",  "slug": "affiliate_name", "type": "category"},
+        {"id": f"{B}-from-date",      "name": "From Date", "slug": "from_date",      "type": "date/single"},
+        {"id": f"{B}-to-date",        "name": "To Date",   "slug": "to_date",        "type": "date/single"},
+        {"id": f"{B}-geo",            "name": "Geo",       "slug": "geo",            "type": "string/="},
+        {"id": f"{B}-affiliate-name", "name": "Affiliate", "slug": "affiliate_name", "type": "string/="},
     ]
 
 
 def _all_maps(param_ids, card_id):
     from_id, to_id, geo_id, aff_id = param_ids
     return [
-        {"parameter_id": from_id, "card_id": card_id, "target": ["variable", ["template-tag", "from_date"]]},
-        {"parameter_id": to_id,   "card_id": card_id, "target": ["variable", ["template-tag", "to_date"]]},
-        {"parameter_id": geo_id,  "card_id": card_id, "target": ["variable", ["template-tag", "geo"]]},
-        {"parameter_id": aff_id,  "card_id": card_id, "target": ["variable", ["template-tag", "affiliate_name"]]},
+        {"parameter_id": from_id, "card_id": card_id, "target": ["variable",  ["template-tag", "from_date"]]},
+        {"parameter_id": to_id,   "card_id": card_id, "target": ["variable",  ["template-tag", "to_date"]]},
+        {"parameter_id": geo_id,  "card_id": card_id, "target": ["dimension", ["template-tag", "geo"]]},
+        {"parameter_id": aff_id,  "card_id": card_id, "target": ["dimension", ["template-tag", "affiliate_name"]]},
     ]
 
 
 def build_dashcards(cards, param_ids):
     layout = [
-        ("ftds",       0,  0,  4,  4),
-        ("regs",       0,  4,  4,  4),
-        ("clicks",     0,  8,  4,  4),
-        ("ngr",        0, 12,  4,  4),
-        ("commission", 0, 16,  4,  4),
-        ("daily",      4,  0, 20,  6),
-        ("ftds_geo",  10,  0, 10,  7),
-        ("ngr_geo",   10, 10, 10,  7),
-        ("top_aff",   17,  0, 20,  8),
-        ("scorecard", 25,  0, 20, 10),
+        # Row 0: KPI scalars
+        ("ftds",             0,  0,  4,  4),
+        ("regs",             0,  4,  4,  4),
+        ("clicks",           0,  8,  4,  4),
+        ("ngr",              0, 12,  4,  4),
+        ("commission",       0, 16,  4,  4),
+        # Row 1: Daily FTDs trend
+        ("daily",            4,  0, 20,  6),
+        # Row 2: By Geo
+        ("ftds_geo",        10,  0, 10,  7),
+        ("ngr_geo",         10, 10, 10,  7),
+        # Row 3: Top Affiliates by FTDs | by Signups
+        ("top_aff",         17,  0, 10,  8),
+        ("top_aff_signup",  17, 10, 10,  8),
+        # Row 4: Full scorecard table
+        ("scorecard",       25,  0, 20, 10),
     ]
     dashcards = []
     for idx, (key, row, col, size_x, size_y) in enumerate(layout):
@@ -274,6 +366,15 @@ def build_dashboard(mb, db_id, brand):
     dash_name = f"{brand} Performance Overview"
     print(f"\nBuilding dashboard: {dash_name}")
 
+    # Resolve field IDs needed for dimension (dropdown) filters
+    print("  Finding field IDs for dropdown filters …")
+    geo_field_id = find_field_id(mb, db_id, "bahigo_wettigo_stats", "geo")
+    aff_field_id = find_field_id(mb, db_id, "bahigo_wettigo_stats", "affiliate_name")
+
+    # Tell Metabase to scan and cache values for both fields (enables the dropdown)
+    configure_field_for_dropdown(mb, geo_field_id)
+    configure_field_for_dropdown(mb, aff_field_id)
+
     queries   = build_queries(brand)
     params    = _params(brand)
     param_ids = [p["id"] for p in params]
@@ -281,20 +382,24 @@ def build_dashboard(mb, db_id, brand):
     print("  Upserting cards...")
     existing = existing_cards(mb)
 
+    def t(sql):
+        return _build_dim_tags(sql, geo_field_id, aff_field_id)
+
     num_viz   = {"number.style": "decimal"}
     num_money = {"number.style": "currency", "currency": "EUR", "currency_style": "symbol"}
 
     cards = {
-        "ftds":       upsert_card(mb, db_id, f"{brand} — FTDs",                  queries["ftds_scalar"],       "scalar", num_viz,   existing),
-        "regs":       upsert_card(mb, db_id, f"{brand} — Registrations",          queries["regs_scalar"],       "scalar", num_viz,   existing),
-        "clicks":     upsert_card(mb, db_id, f"{brand} — Clicks",                 queries["clicks_scalar"],     "scalar", num_viz,   existing),
-        "ngr":        upsert_card(mb, db_id, f"{brand} — NGR",                    queries["ngr_scalar"],        "scalar", num_money, existing),
-        "commission": upsert_card(mb, db_id, f"{brand} — Commission",             queries["commission_scalar"], "scalar", num_money, existing),
-        "daily":      upsert_card(mb, db_id, f"{brand} — Daily FTDs Trend",       queries["daily_ftds"],        "line",   {"graph.dimensions": ["report_date"], "graph.metrics": ["ftds"]}, existing),
-        "ftds_geo":   upsert_card(mb, db_id, f"{brand} — FTDs by Geo",            queries["ftds_by_geo"],       "row",    {"graph.dimensions": ["geo"], "graph.metrics": ["ftds"]},         existing),
-        "ngr_geo":    upsert_card(mb, db_id, f"{brand} — NGR by Geo",             queries["ngr_by_geo"],        "row",    {"graph.dimensions": ["geo"], "graph.metrics": ["ngr"]},          existing),
-        "top_aff":    upsert_card(mb, db_id, f"{brand} — Top Affiliates by FTDs", queries["top_affiliates"],    "row",    {"graph.dimensions": ["affiliate_name"], "graph.metrics": ["ftds"]}, existing),
-        "scorecard":  upsert_card(mb, db_id, f"{brand} — Full Scorecard",         queries["scorecard"],         "table",  {}, existing),
+        "ftds":          upsert_card(mb, db_id, f"{brand} — FTDs",                     queries["ftds_scalar"],          "scalar", num_viz,   existing, tags=t(queries["ftds_scalar"])),
+        "regs":          upsert_card(mb, db_id, f"{brand} — Registrations",             queries["regs_scalar"],          "scalar", num_viz,   existing, tags=t(queries["regs_scalar"])),
+        "clicks":        upsert_card(mb, db_id, f"{brand} — Clicks",                    queries["clicks_scalar"],        "scalar", num_viz,   existing, tags=t(queries["clicks_scalar"])),
+        "ngr":           upsert_card(mb, db_id, f"{brand} — NGR",                       queries["ngr_scalar"],           "scalar", num_money, existing, tags=t(queries["ngr_scalar"])),
+        "commission":    upsert_card(mb, db_id, f"{brand} — Commission",                queries["commission_scalar"],    "scalar", num_money, existing, tags=t(queries["commission_scalar"])),
+        "daily":         upsert_card(mb, db_id, f"{brand} — Daily FTDs Trend",          queries["daily_ftds"],           "line",   {"graph.dimensions": ["report_date"], "graph.metrics": ["ftds"]},        existing, tags=t(queries["daily_ftds"])),
+        "ftds_geo":      upsert_card(mb, db_id, f"{brand} — FTDs by Geo",               queries["ftds_by_geo"],          "row",    {"graph.dimensions": ["geo"],            "graph.metrics": ["ftds"]},       existing, tags=t(queries["ftds_by_geo"])),
+        "ngr_geo":       upsert_card(mb, db_id, f"{brand} — NGR by Geo",                queries["ngr_by_geo"],           "row",    {"graph.dimensions": ["geo"],            "graph.metrics": ["ngr"]},        existing, tags=t(queries["ngr_by_geo"])),
+        "top_aff":       upsert_card(mb, db_id, f"{brand} — Top Affiliates by FTDs",    queries["top_affiliates"],       "row",    {"graph.dimensions": ["affiliate_name"], "graph.metrics": ["ftds"]},       existing, tags=t(queries["top_affiliates"])),
+        "top_aff_signup":upsert_card(mb, db_id, f"{brand} — Top Affiliates by Signups", queries["top_affiliates_signup"],"row",    {"graph.dimensions": ["affiliate_name"], "graph.metrics": ["regs"]},       existing, tags=t(queries["top_affiliates_signup"])),
+        "scorecard":     upsert_card(mb, db_id, f"{brand} — Full Scorecard",            queries["scorecard"],            "table",  {},        existing, tags=t(queries["scorecard"])),
     }
 
     print(f"  Cards ready: {list(cards.keys())}")
