@@ -190,6 +190,31 @@ def _is_real_date(value: str) -> bool:
     return bool(value) and value.strip().lower() not in _NULL_DATE_VALUES
 
 
+_CUSTOMER_DATE_FMTS = (
+    "%d/%m/%Y %H:%M:%S",   # Netrefer default: 12/04/2026 00:00:00
+    "%d/%m/%Y",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d",
+    "%m/%d/%Y",
+)
+
+
+def _parse_customer_date(value: str) -> Optional[date]:
+    """Parse a date string from the Netrefer customer report into a date object.
+
+    Returns None if the value is empty, a placeholder, or unrecognised.
+    """
+    if not _is_real_date(value):
+        return None
+    v = value.strip()
+    for fmt in _CUSTOMER_DATE_FMTS:
+        try:
+            return datetime.strptime(v, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def aggregate_customers(
     rows: List[Dict],
     report_date: date,
@@ -197,13 +222,19 @@ def aggregate_customers(
     """
     Aggregate customer rows by (affiliate_id, brand_name, country_name).
 
-    The customer report is a cumulative snapshot — each row is one customer
-    whose signup/FTD dates record when they originally signed up or first
-    deposited (historical, not necessarily today).
+    Works with both file types Netrefer produces:
+      • Daily new-signup file  — every row has signup_date == report_date.
+      • Cumulative/range file  — contains all historical customers.
 
-    registrations    = total customers attributed to this affiliate+brand+geo
-    first_depositors = customers who have a real (non-placeholder) FTD date
-    depositing_customers = customers with deposits > 0 in this report
+    In both cases we filter by report_date so only the relevant day's
+    activity is counted:
+      registrations    = customers whose signup_date == report_date
+      first_depositors = customers whose ftd_date    == report_date
+      revenue/deposits = summed only from rows that are active today
+                         (signup OR FTD on report_date)
+
+    total_customers is counted for ALL rows and is used purely for
+    proportional traffic/commission weighting across brand/geo groups.
     """
     result: Dict[Tuple, Dict] = defaultdict(lambda: {
         "registrations":        0,
@@ -217,30 +248,40 @@ def aggregate_customers(
         "total_customers":      0,   # used for proportional traffic weighting
     })
 
-    # Diagnostic: log distinct brands, geos, and a sample of ftd_date values
+    # Diagnostic: log a sample of the raw date values we see
     ftd_samples: list = []
 
     for r in rows:
         key = (r["affiliate_id"], r["brand_name"], r["country_name"])
         agg = result[key]
+
+        # Always count toward total_customers (for proportional weighting).
         agg["total_customers"] += 1
 
-        # Every customer row = one registration
-        agg["registrations"] += 1
+        signup_dt = _parse_customer_date(r["signup_date"])
+        ftd_dt    = _parse_customer_date(r["ftd_date"])
 
-        # Customer is an FTD only when ftd_date is a real date (not N/A, blank, etc.)
-        if _is_real_date(r["ftd_date"]):
+        is_new_signup = (signup_dt == report_date)
+        is_ftd_today  = (ftd_dt    == report_date)
+
+        # Count registration only if the customer signed up on report_date.
+        if is_new_signup:
+            agg["registrations"] += 1
+
+        # Count FTD only if the first deposit happened on report_date.
+        if is_ftd_today:
             agg["first_depositors"] += 1
 
-        dep = r["deposits"]
-        if dep > 0:
-            agg["depositing_customers"] += 1
-
-        agg["gross_revenue"] += r["gross_revenue"]
-        agg["net_revenue"]   += r["net_revenue"]
-        agg["deposits"]      += dep
-        agg["bonuses"]       += r["bonuses"]
-        agg["adj_general"]   += r["adj_general"]
+        # Revenue: include only rows with activity on report_date.
+        if is_new_signup or is_ftd_today:
+            dep = r["deposits"]
+            if dep > 0:
+                agg["depositing_customers"] += 1
+            agg["gross_revenue"] += r["gross_revenue"]
+            agg["net_revenue"]   += r["net_revenue"]
+            agg["deposits"]      += dep
+            agg["bonuses"]       += r["bonuses"]
+            agg["adj_general"]   += r["adj_general"]
 
         if len(ftd_samples) < 6:
             ftd_samples.append(repr(r["ftd_date"]))
