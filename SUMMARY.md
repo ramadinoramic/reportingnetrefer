@@ -3,7 +3,7 @@
 ## Overview
 
 Full reporting pipeline for **Netrefer affiliate data**:
-CSV export → MySQL ETL → Metabase dashboards (operational + executive).
+CSV export → MySQL ETL → Metabase dashboards (operational + executive) + Telegram bot (natural language queries).
 
 ---
 
@@ -26,9 +26,15 @@ CSV export → MySQL ETL → Metabase dashboards (operational + executive).
   etl_runs        (audit log)
   + views + stored procedures
         │
-        ▼
-[Metabase  :3001]
-  5 dashboards (see below)
+        ├──────────────────────────────────┐
+        ▼                                  ▼
+[Metabase  :3001]              [Telegram Bot]
+  6 dashboards                   scripts/telegram_bot.py
+        │                        /menu keyboard + natural
+        ▼                        language queries
+[Cloudflare Tunnel]
+  HTTPS remote access
+  Zero Trust OTP gate
 ```
 
 All services run via **Docker Compose**. Data volumes survive `make down`.
@@ -42,18 +48,34 @@ All services run via **Docker Compose**. Data volumes survive `make down`.
 | **Affiliate Deep Dive** | `setup_affiliate_dashboard.py` | Operations | Filter by affiliate + date range; KPIs, trends, campaign breakdown |
 | **Board Report** | `setup_board_dashboard.py` | C-Level | Monthly KPIs, top affiliates, country/campaign breakdown |
 | **ETL Health** | `setup_etl_dashboard.py` | Engineering | Load run history, error rates, row counts |
-| **Channel & Affiliate Overview** | `setup_channel_dashboard.py` | Operations | Filter by date, channel (campaign), affiliate; KPI scorecards, daily line charts, per-channel bar charts, affiliate detail table |
-| **Performance Leaderboard** | `setup_leaderboard_dashboard.py` | Management | Who is actually performing? Ranked by FTDs + conversion rates; bar charts + full scorecard table |
-| **Source Drop Detection** | `setup_trend_dashboard.py` | Operations | Which sources are declining? 3d/7d/15d comparison vs prior window; worst drops at the top |
+| **Channel & Affiliate Overview** | `setup_channel_dashboard.py` | Operations | Filter by date, channel group, affiliate; KPI scorecards, daily line charts, horizontal bar charts per channel |
+| **Performance Leaderboard** | `setup_leaderboard_dashboard.py` | Management | Who is performing vs not: top 10 by FTDs + NGR, conversion rates, full ranked scorecard table |
+| **Source Drop Detection** | `setup_trend_dashboard.py` | Operations | Which sources are declining? 3d/7d/15d vs prior window; worst drops first; self-contained (no date filters needed) |
+
+### Channel Grouping
+
+All channel-aware dashboards and the Telegram bot compute channel using a `CASE` expression on `affiliate_id` (not `campaign_name`):
+
+| Group | Description |
+|-------|-------------|
+| CPA/CPL | Cost-per-action / cost-per-lead affiliates |
+| Direct | Direct traffic partners |
+| MB in-house | MoneyBoosters in-house team |
+| MB outsourced | MoneyBoosters outsourced partners |
+| SEO | Search engine optimisation affiliates |
+| Influencers | Influencer & content affiliates |
+| Social | Social media affiliates |
+| unattributed | No affiliate ID (organic / direct) |
+| Affiliates | All other affiliates |
 
 ---
 
 ## ETL Pipeline (`etl/`)
 
 - **`netrefer_etl.py`** — reads Netrefer CSV exports, strips `sep=` header, skips blank/totals rows, maps columns via `column_map.yaml`, UPSERTs into MySQL (idempotent — safe to re-run).
-- **`watcher.py`** — watches `./drop/` for new CSVs and auto-loads them; runs inside Docker.
+- **`watcher.py`** — watches `./drop/` every 60 seconds for new CSVs and auto-loads them; runs inside Docker. Skips files already in `etl_runs` with `status='success'`.
 - **`column_map.yaml`** — decouples raw Netrefer headers from DB column names. Edit here when Netrefer changes their export format — no code changes needed.
-- Date is extracted from the **filename** (e.g. `netrefer_2026-03-09.csv`) — Netrefer CSVs have no date column.
+- Date is extracted from the **filename** (e.g. `netrefer_2026-03-09.csv`) — Netrefer CSVs have no date column; supports `YYYY-MM-DD`, `YYYYMMDD`, `DD-MM-YYYY`, `DD.MM.YYYY`.
 
 ---
 
@@ -73,7 +95,7 @@ All services run via **Docker Compose**. Data volumes survive `make down`.
 | `v_affiliate_daily_report` | Filterable affiliate view |
 | `v_top_affiliates_7d` | Rolling 7-day rankings by FTD/signup |
 
-**Audit:** `etl_runs` table tracks every load run (timestamp, rows upserted, status, errors).
+**Audit:** `etl_runs` table tracks every load run (timestamp, rows upserted, status, errors, DQ warnings).
 
 ---
 
@@ -81,6 +103,7 @@ All services run via **Docker Compose**. Data volumes survive `make down`.
 
 | Script | Purpose |
 |--------|---------|
+| `telegram_bot.py` | Telegram reporting bot — see section below |
 | `generate_board_report.py` | Standalone HTML executive report (no Metabase needed); period-over-period KPI comparison with delta badges; email via SMTP |
 | `source_trend_report.py` | **CLI drop detection** — terminal table + HTML report; last 3/7/15 days vs prior period; red = dropped >20% FTDs |
 | `audit_csv.py` | Pre-load sanity check: validates column mapping, row counts, UPSERT collisions |
@@ -90,13 +113,64 @@ All services run via **Docker Compose**. Data volumes survive `make down`.
 
 ---
 
+## Telegram Bot
+
+Natural language reporting interface. Send questions like *"who is top performer yesterday?"* or tap a button from `/menu`.
+
+**Commands:**
+- `/start` or `/menu` — shows inline keyboard with 10 pre-filled quick queries
+
+**Quick-access buttons** (tap — no typing needed):
+
+| Row | Left | Right |
+|-----|------|-------|
+| 1 | 📊 Summary yesterday | 📊 Summary this week |
+| 2 | 🏆 Top performers | 🏆 Top — last 7d |
+| 3 | 📡 Channels yesterday | 📡 Channels this week |
+| 4 | 📈 Trend last 7d | 📈 Trend this month |
+| 5 | ⚠️ Who is dropping? | 🔄 Week vs last week |
+
+**Natural language intents understood:**
+
+| Intent | Example |
+|--------|---------|
+| `kpi_summary` | "how did we do yesterday?" |
+| `top_performers` | "who is best by NGR last week?" |
+| `channel_breakdown` | "show channel breakdown this week" |
+| `trend` | "daily trend last 7 days" |
+| `drops` | "who is dropping?" / "which sources are declining?" |
+| `comparison` | "compare this week vs last week" |
+| `specific_affiliate` | "show me SEO stats yesterday" |
+
+**Security:** `TELEGRAM_ALLOWED_USERS` in `.env` — comma-separated Telegram user IDs (get from `@userinfobot`). Bot silently ignores all other users.
+
+**Required `.env` vars:**
+```
+TELEGRAM_BOT_TOKEN=        # from @BotFather
+TELEGRAM_ALLOWED_USERS=    # e.g. 491833895,123456789
+```
+
+**Share with a colleague:** Get their Telegram user ID (they message `@userinfobot`), add it to `TELEGRAM_ALLOWED_USERS`, run `docker compose up -d bot`.
+
+---
+
+## Remote Access (Cloudflare Tunnel)
+
+Metabase is accessible to remote colleagues via a **Cloudflare Zero Trust tunnel**:
+- Metabase binds to `127.0.0.1:3001` (loopback only — not reachable directly from outside)
+- `cloudflared` Docker service opens an outbound tunnel to Cloudflare's edge
+- Cloudflare Access gate requires email OTP before the Metabase login screen appears
+- Required `.env` var: `CLOUDFLARE_TUNNEL_TOKEN=` (from Cloudflare Zero Trust dashboard)
+
+---
+
 ## Daily Workflow
 
 ```bash
 # 1. Download from Netrefer portal — rename file:
 #    netrefer_YYYY-MM-DD.csv
 
-# 2. Drop into ./drop/   (watcher auto-loads)
+# 2. Drop into ./drop/   (watcher auto-loads within 60s)
 #    OR load manually:
 make load FILE=drop/netrefer_2026-03-17.csv
 
@@ -104,6 +178,11 @@ make load FILE=drop/netrefer_2026-03-17.csv
 make check-date DATE=2026-03-17
 
 # 4. Open Metabase:  http://localhost:3001
+#    OR ask Telegram bot:  /menu
+
+# If re-uploading the same filename (updated Netrefer export):
+make reprocess FILE=netrefer_2026-03-17.csv
+# watcher will pick it up within 60s
 ```
 
 ---
@@ -121,6 +200,8 @@ make check-date DATE=2026-03-17
 | `make load FILE=path/to.csv` | Load a single CSV |
 | `make load-dir` | Load all CSVs from `./drop/` |
 | `make watch` | Watch `./drop/` in foreground |
+| `make watch-once` | Process `./drop/` once and exit |
+| `make reprocess FILE=name.csv` | Force re-process already-loaded file |
 | `make audit-csv FILE=...` | Validate CSV before loading |
 | `make check-date DATE=YYYY-MM-DD` | Quick row/metric count for a date |
 | `make audit-etl` | Show recent ETL run history |
@@ -128,10 +209,10 @@ make check-date DATE=2026-03-17
 
 ### Dashboards
 
-All dashboard targets use `MB_USER` and `MB_PASS` (not `USER`/`PASSWORD`):
+All dashboard targets use `MB_USER` and `MB_PASS`:
 
 ```bash
-make <target> MB_USER=dinoramitch@gmail.com MB_PASS=yourpassword
+make <target> MB_USER=admin@example.com MB_PASS=yourpassword
 ```
 
 | Command | Dashboard created |
@@ -169,16 +250,24 @@ make <target> MB_USER=dinoramitch@gmail.com MB_PASS=yourpassword
 
 | Service | Port | Notes |
 |---------|------|-------|
-| Metabase | `:3001` | `http://localhost:3001` |
 | MySQL | `:3308` | Mapped from container :3306 |
-| ETL watcher | — | Runs inside Docker as `etl` service |
+| Metabase | `:3001` (loopback) | `http://localhost:3001` — not externally reachable directly |
+| ETL watcher | — | `etl` Docker service; polls `./drop/` every 60s |
+| Telegram bot | — | `bot` Docker service; `/menu` for quick queries |
+| Cloudflare Tunnel | — | `cloudflared` Docker service; HTTPS remote access + OTP gate |
 
 ### Common issues
 
 **H2 PK violation on dashboard setup:**
 ```bash
-make reset-mb-h2   # bumps sequences above existing IDs
+make reset-mb-h2   # bumps sequences to 9,000,000 above existing IDs
 # wait 30s, then re-run the dashboard target
+```
+
+**File already loaded — watcher keeps skipping it:**
+```bash
+make reprocess FILE=netrefer_2026-04-08.csv
+# clears etl_runs record; watcher picks it up within 60s
 ```
 
 **MySQL auth error (`caching_sha2_password`):**
@@ -200,11 +289,15 @@ docker compose logs -f metabase
 
 - **Metabase over Looker** — self-hosted, zero licensing cost, full REST API for automation.
 - **Filename-based date** — Netrefer CSVs have no date column; date comes from filename.
-- **Idempotent scripts** — all dashboard setup scripts can be re-run safely; existing cards are updated (PUT), old dashboard is archived and recreated fresh.
+- **Idempotent dashboard scripts** — all `setup_*.py` scripts update dashboards **in-place** (PUT) — preserves dashboard URL/ID and avoids H2 sequence collisions. Safe to re-run.
+- **Channel group via `affiliate_id` CASE** — `campaign_name` is inconsistent across exports; `affiliate_id` is stable. All channel grouping uses a single `CHANNEL_CASE` constant shared across dashboard scripts and the Telegram bot.
 - **Field filter dropdowns** — `has_field_values=list` + rescan forces Metabase to populate dropdowns from the DB rather than requiring manual text entry.
 - **Simple date variables** (`type: date`) over field filters for date range — more reliable; Metabase substitutes `'YYYY-MM-DD'` strings directly into SQL.
 - **No timezone math in SQL** — dates come from filenames (already the correct date), so no UTC conversion needed in queries.
 - **Drop detection anchors to `MAX(report_date)`** — always uses the latest actual data, not `CURDATE()`, so it works regardless of when you upload files.
+- **Telegram bot uses `date.today()` as period anchor** — "yesterday" always means the literal calendar day before today, not "one day before the latest DB row". The `latest` / `today` tokens still return the most recent available data.
+- **Bot uses keyword-based intent parsing** — no external API dependency or credits needed; fast, free, deterministic.
+- **Bot DB credentials use `MYSQL_BOT_USER=root`** — set in `docker-compose.yml` environment override so the bot always has DB access regardless of what `MYSQL_USER` is set to in `.env`.
 
 ---
 
