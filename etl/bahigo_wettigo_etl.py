@@ -74,17 +74,17 @@ log = logging.getLogger("bw_etl")
 # Customer report parser
 # ──────────────────────────────────────────────
 
-# Known Netrefer data-entry typos / alternate spellings → canonical brand name.
-# Add any new variants here if they appear in future exports.
+# Brand name normalisation: maps known alternate spellings to the canonical name.
+# 'Bahibi' appears in some Netrefer exports but is a distinct internal entity —
+# do NOT merge it into Bahigo.  Add only confirmed aliases here.
 _BRAND_ALIASES: Dict[str, str] = {
-    "bahibi": "Bahigo",
     "bahigo": "Bahigo",
     "wettigo": "Wettigo",
 }
 
 
 def _normalize_brand(raw: str) -> str:
-    """Return the canonical brand name, or the original if not recognised."""
+    """Return the canonical brand name, or the original value if not recognised."""
     return _BRAND_ALIASES.get(raw.strip().lower(), raw.strip())
 
 
