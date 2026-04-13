@@ -171,9 +171,13 @@ def aggregate_customers(
     """
     Aggregate customer rows by (affiliate_id, brand_name, country_name).
 
-    registrations       = customers whose Signup Date == report_date
-    first_depositors    = customers whose FTD Date    == report_date
-    depositing_customers= customers with Deposits > 0 on this day
+    The customer report is a cumulative snapshot — each row is one customer
+    whose signup/FTD dates record when they originally signed up or first
+    deposited (historical, not necessarily today).
+
+    registrations    = total customers attributed to this affiliate+brand+geo
+    first_depositors = customers who have a non-empty FTD date (ever FTD'd)
+    depositing_customers = customers with deposits > 0 in this report
     """
     result: Dict[Tuple, Dict] = defaultdict(lambda: {
         "registrations":        0,
@@ -184,7 +188,7 @@ def aggregate_customers(
         "deposits":             0.0,
         "bonuses":              0.0,
         "adj_general":          0.0,
-        "total_customers":      0,   # used for proportional weighting
+        "total_customers":      0,   # used for proportional traffic weighting
     })
 
     for r in rows:
@@ -192,12 +196,11 @@ def aggregate_customers(
         agg = result[key]
         agg["total_customers"] += 1
 
-        signup = _parse_date(r["signup_date"])
-        if signup and signup == report_date:
-            agg["registrations"] += 1
+        # Every customer row = one registration (they signed up at some point)
+        agg["registrations"] += 1
 
-        ftd = _parse_date(r["ftd_date"])
-        if ftd and ftd == report_date:
+        # Customer is an FTD if they have a non-empty FTD date
+        if r["ftd_date"] and r["ftd_date"].strip():
             agg["first_depositors"] += 1
 
         dep = r["deposits"]
@@ -320,13 +323,10 @@ def merge(
                 "unique_views":  round(aff_row.get("unique_views",  0) * weight),
                 "clicks":        round(aff_row.get("clicks",        0) * weight),
                 "unique_clicks": round(aff_row.get("unique_clicks", 0) * weight),
-                # FTDs/regs: proportional split from affiliate stats daily totals.
-                # The customer report contains historical signup/FTD dates (not
-                # today's activity), so we use affiliate stats as the source of
-                # truth and split by brand/geo customer count as the weight.
-                "registrations":        round(aff_row.get("registrations",   0) * weight),
-                "first_depositors":     round(aff_row.get("first_depositors", 0) * weight),
-                # Depositing customers: exact count from customer report
+                # FTDs/regs: exact from customer report
+                # (cumulative totals per affiliate+brand+geo)
+                "registrations":        agg["registrations"],
+                "first_depositors":     agg["first_depositors"],
                 "depositing_customers": agg["depositing_customers"],
                 # Revenue: exact
                 "deposits":      round(agg["deposits"],      4),
