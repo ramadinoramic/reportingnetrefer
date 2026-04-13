@@ -3,11 +3,13 @@
 setup_bw_dashboard.py  —  Bahigo or Wettigo brand dashboard in Metabase.
 
 Creates (or updates in-place) a dashboard for a single brand showing:
-  Row 0 – KPI scalars: FTDs, Registrations, Clicks, NGR, Commission
-  Row 1 – Daily FTDs trend (line)
-  Row 2 – FTDs by Geo (horizontal bar)  |  NGR by Geo (horizontal bar)
-  Row 3 – Top Affiliates by FTDs (bar)  |  Top Affiliates by Signups (bar)
-  Row 4 – Full affiliate performance table
+  Row 0  – KPI scalars: FTDs, Registrations, Clicks, NGR, Commission
+  Row 1  – Daily FTDs trend (line)
+  Row 2  – FTDs by Geo (bar)       |  NGR by Geo (bar)
+  Row 2b – Clicks by Geo (bar)     |  Signups by Geo (bar)
+  Row 3  – Top Affiliates by FTDs  |  by Signups  |  by Clicks
+  Row 4  – Full Scorecard table (aggregated across selected date range)
+  Row 5  – Daily Scorecard table (one row per day — set From=To for a single day)
 
 Filters: From Date, To Date, Geo (dropdown), Affiliate (dropdown)
 
@@ -322,6 +324,32 @@ def build_queries(brand: str) -> dict:
             ORDER BY regs DESC
             LIMIT 15
         """,
+        "top_affiliates_clicks": f"""
+            SELECT affiliate_name,
+                   SUM(clicks)                 AS clicks,
+                   SUM(registrations)          AS regs,
+                   SUM(first_depositors)       AS ftds,
+                   ROUND(SUM(first_depositors)*100.0/NULLIF(SUM(registrations),0),1) AS ftd_rate_pct
+            FROM bahigo_wettigo_stats
+            {WHERE}
+            GROUP BY affiliate_name
+            ORDER BY clicks DESC
+            LIMIT 15
+        """,
+        "clicks_by_geo": f"""
+            SELECT geo, SUM(clicks) AS clicks
+            FROM bahigo_wettigo_stats
+            {WHERE}
+            GROUP BY geo
+            ORDER BY clicks DESC
+        """,
+        "regs_by_geo": f"""
+            SELECT geo, SUM(registrations) AS regs
+            FROM bahigo_wettigo_stats
+            {WHERE}
+            GROUP BY geo
+            ORDER BY regs DESC
+        """,
         "scorecard": f"""
             SELECT affiliate_name,
                    geo,
@@ -336,6 +364,21 @@ def build_queries(brand: str) -> dict:
             {WHERE}
             GROUP BY affiliate_name, geo
             ORDER BY ftds DESC
+        """,
+        "scorecard_daily": f"""
+            SELECT report_date,
+                   affiliate_name,
+                   geo,
+                   SUM(clicks)                 AS clicks,
+                   SUM(registrations)          AS regs,
+                   SUM(first_depositors)       AS ftds,
+                   ROUND(SUM(net_revenue),  0) AS ngr,
+                   ROUND(SUM(total_reward), 0) AS commission,
+                   ROUND(SUM(first_depositors)*100.0/NULLIF(SUM(registrations),0),1) AS ftd_rate_pct
+            FROM bahigo_wettigo_stats
+            {WHERE}
+            GROUP BY report_date, affiliate_name, geo
+            ORDER BY report_date DESC, ftds DESC
         """,
     }
 
@@ -367,21 +410,28 @@ def _all_maps(param_ids, card_id):
 def build_dashcards(cards, param_ids):
     layout = [
         # Row 0: KPI scalars
-        ("ftds",             0,  0,  4,  4),
-        ("regs",             0,  4,  4,  4),
-        ("clicks",           0,  8,  4,  4),
-        ("ngr",              0, 12,  4,  4),
-        ("commission",       0, 16,  4,  4),
+        ("ftds",              0,  0,  4,  4),
+        ("regs",              0,  4,  4,  4),
+        ("clicks",            0,  8,  4,  4),
+        ("ngr",               0, 12,  4,  4),
+        ("commission",        0, 16,  4,  4),
         # Row 1: Daily FTDs trend
-        ("daily",            4,  0, 20,  6),
-        # Row 2: By Geo
-        ("ftds_geo",        10,  0, 10,  7),
-        ("ngr_geo",         10, 10, 10,  7),
-        # Row 3: Top Affiliates by FTDs | by Signups
-        ("top_aff",         17,  0, 10,  8),
-        ("top_aff_signup",  17, 10, 10,  8),
-        # Row 4: Full scorecard table
-        ("scorecard",       25,  0, 20, 10),
+        ("daily",             4,  0, 20,  6),
+        # Row 2: FTDs and NGR by Geo
+        ("ftds_geo",         10,  0, 10,  7),
+        ("ngr_geo",          10, 10, 10,  7),
+        # Row 2b: Clicks and Signups by Geo
+        ("clicks_geo",       17,  0, 10,  7),
+        ("regs_geo",         17, 10, 10,  7),
+
+        # Row 3: Top Affiliates — FTDs | Signups | Clicks  (3 charts)
+        ("top_aff",          24,  0,  7,  8),
+        ("top_aff_signup",   24,  7,  7,  8),
+        ("top_aff_clicks",   24, 14,  6,  8),
+        # Row 4: Full scorecard (aggregated across date range)
+        ("scorecard",        32,  0, 20, 10),
+        # Row 5: Daily scorecard (one row per day — filter to a single date for day view)
+        ("scorecard_daily",  42,  0, 20, 10),
     ]
     dashcards = []
     for idx, (key, row, col, size_x, size_y) in enumerate(layout):
@@ -424,18 +474,25 @@ def build_dashboard(mb, db_id, brand):
     num_viz   = {"number.style": "decimal"}
     num_money = {"number.style": "currency", "currency": "EUR", "currency_style": "symbol"}
 
+    geo_bar  = lambda m: {"graph.dimensions": ["geo"],            "graph.metrics": [m]}
+    aff_bar  = lambda m: {"graph.dimensions": ["affiliate_name"], "graph.metrics": [m]}
+
     cards = {
-        "ftds":          upsert_card(mb, db_id, f"{brand} — FTDs",                     queries["ftds_scalar"],          "scalar", num_viz,   existing, tags=t(queries["ftds_scalar"])),
-        "regs":          upsert_card(mb, db_id, f"{brand} — Registrations",             queries["regs_scalar"],          "scalar", num_viz,   existing, tags=t(queries["regs_scalar"])),
-        "clicks":        upsert_card(mb, db_id, f"{brand} — Clicks",                    queries["clicks_scalar"],        "scalar", num_viz,   existing, tags=t(queries["clicks_scalar"])),
-        "ngr":           upsert_card(mb, db_id, f"{brand} — NGR",                       queries["ngr_scalar"],           "scalar", num_money, existing, tags=t(queries["ngr_scalar"])),
-        "commission":    upsert_card(mb, db_id, f"{brand} — Commission",                queries["commission_scalar"],    "scalar", num_money, existing, tags=t(queries["commission_scalar"])),
-        "daily":         upsert_card(mb, db_id, f"{brand} — Daily FTDs Trend",          queries["daily_ftds"],           "line",   {"graph.dimensions": ["report_date"], "graph.metrics": ["ftds"]},        existing, tags=t(queries["daily_ftds"])),
-        "ftds_geo":      upsert_card(mb, db_id, f"{brand} — FTDs by Geo",               queries["ftds_by_geo"],          "row",    {"graph.dimensions": ["geo"],            "graph.metrics": ["ftds"]},       existing, tags=t(queries["ftds_by_geo"])),
-        "ngr_geo":       upsert_card(mb, db_id, f"{brand} — NGR by Geo",                queries["ngr_by_geo"],           "row",    {"graph.dimensions": ["geo"],            "graph.metrics": ["ngr"]},        existing, tags=t(queries["ngr_by_geo"])),
-        "top_aff":       upsert_card(mb, db_id, f"{brand} — Top Affiliates by FTDs",    queries["top_affiliates"],       "row",    {"graph.dimensions": ["affiliate_name"], "graph.metrics": ["ftds"]},       existing, tags=t(queries["top_affiliates"])),
-        "top_aff_signup":upsert_card(mb, db_id, f"{brand} — Top Affiliates by Signups", queries["top_affiliates_signup"],"row",    {"graph.dimensions": ["affiliate_name"], "graph.metrics": ["regs"]},       existing, tags=t(queries["top_affiliates_signup"])),
-        "scorecard":     upsert_card(mb, db_id, f"{brand} — Full Scorecard",            queries["scorecard"],            "table",  {},        existing, tags=t(queries["scorecard"])),
+        "ftds":             upsert_card(mb, db_id, f"{brand} — FTDs",                      queries["ftds_scalar"],           "scalar", num_viz,        existing, tags=t(queries["ftds_scalar"])),
+        "regs":             upsert_card(mb, db_id, f"{brand} — Registrations",              queries["regs_scalar"],           "scalar", num_viz,        existing, tags=t(queries["regs_scalar"])),
+        "clicks":           upsert_card(mb, db_id, f"{brand} — Clicks",                     queries["clicks_scalar"],         "scalar", num_viz,        existing, tags=t(queries["clicks_scalar"])),
+        "ngr":              upsert_card(mb, db_id, f"{brand} — NGR",                        queries["ngr_scalar"],            "scalar", num_money,      existing, tags=t(queries["ngr_scalar"])),
+        "commission":       upsert_card(mb, db_id, f"{brand} — Commission",                 queries["commission_scalar"],     "scalar", num_money,      existing, tags=t(queries["commission_scalar"])),
+        "daily":            upsert_card(mb, db_id, f"{brand} — Daily FTDs Trend",           queries["daily_ftds"],            "line",   {"graph.dimensions": ["report_date"], "graph.metrics": ["ftds"]}, existing, tags=t(queries["daily_ftds"])),
+        "ftds_geo":         upsert_card(mb, db_id, f"{brand} — FTDs by Geo",                queries["ftds_by_geo"],           "row",    geo_bar("ftds"),  existing, tags=t(queries["ftds_by_geo"])),
+        "ngr_geo":          upsert_card(mb, db_id, f"{brand} — NGR by Geo",                 queries["ngr_by_geo"],            "row",    geo_bar("ngr"),   existing, tags=t(queries["ngr_by_geo"])),
+        "clicks_geo":       upsert_card(mb, db_id, f"{brand} — Clicks by Geo",              queries["clicks_by_geo"],         "row",    geo_bar("clicks"),existing, tags=t(queries["clicks_by_geo"])),
+        "regs_geo":         upsert_card(mb, db_id, f"{brand} — Signups by Geo",             queries["regs_by_geo"],           "row",    geo_bar("regs"),  existing, tags=t(queries["regs_by_geo"])),
+        "top_aff":          upsert_card(mb, db_id, f"{brand} — Top Affiliates by FTDs",     queries["top_affiliates"],        "row",    aff_bar("ftds"),  existing, tags=t(queries["top_affiliates"])),
+        "top_aff_signup":   upsert_card(mb, db_id, f"{brand} — Top Affiliates by Signups",  queries["top_affiliates_signup"], "row",    aff_bar("regs"),  existing, tags=t(queries["top_affiliates_signup"])),
+        "top_aff_clicks":   upsert_card(mb, db_id, f"{brand} — Top Affiliates by Clicks",   queries["top_affiliates_clicks"], "row",    aff_bar("clicks"),existing, tags=t(queries["top_affiliates_clicks"])),
+        "scorecard":        upsert_card(mb, db_id, f"{brand} — Full Scorecard",             queries["scorecard"],             "table",  {},              existing, tags=t(queries["scorecard"])),
+        "scorecard_daily":  upsert_card(mb, db_id, f"{brand} — Daily Scorecard",            queries["scorecard_daily"],       "table",  {},              existing, tags=t(queries["scorecard_daily"])),
     }
 
     print(f"  Cards ready: {list(cards.keys())}")
