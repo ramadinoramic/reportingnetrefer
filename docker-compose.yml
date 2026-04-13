@@ -26,6 +26,10 @@ services:
       # Inside Docker the DB is reachable via the service name, not localhost
       MYSQL_HOST: db
       MYSQL_PORT: 3306
+      # Use root so the ETL can write to all tables regardless of which
+      # user is configured in .env (same pattern as the bot service).
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
     volumes:
       - ./drop:/app/drop
     depends_on:
