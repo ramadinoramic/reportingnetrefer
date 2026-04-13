@@ -164,6 +164,18 @@ def parse_customer_report(raw_text: str, col_map: Dict[str, str]) -> List[Dict]:
 # Aggregation
 # ──────────────────────────────────────────────
 
+# Netrefer uses these strings to represent "no date" in date columns.
+_NULL_DATE_VALUES = frozenset({
+    "", "n/a", "na", "null", "none", "-", "--", "0",
+    "00/00/0000", "01/01/1900", "1900-01-01",
+})
+
+
+def _is_real_date(value: str) -> bool:
+    """Return True only when the string looks like a real date, not a placeholder."""
+    return bool(value) and value.strip().lower() not in _NULL_DATE_VALUES
+
+
 def aggregate_customers(
     rows: List[Dict],
     report_date: date,
@@ -176,7 +188,7 @@ def aggregate_customers(
     deposited (historical, not necessarily today).
 
     registrations    = total customers attributed to this affiliate+brand+geo
-    first_depositors = customers who have a non-empty FTD date (ever FTD'd)
+    first_depositors = customers who have a real (non-placeholder) FTD date
     depositing_customers = customers with deposits > 0 in this report
     """
     result: Dict[Tuple, Dict] = defaultdict(lambda: {
@@ -191,16 +203,20 @@ def aggregate_customers(
         "total_customers":      0,   # used for proportional traffic weighting
     })
 
+    # Diagnostic: log distinct brands, geos, and a sample of ftd_date values
+    brand_geos: set = set()
+    ftd_samples: list = []
+
     for r in rows:
         key = (r["affiliate_id"], r["brand_name"], r["country_name"])
         agg = result[key]
         agg["total_customers"] += 1
 
-        # Every customer row = one registration (they signed up at some point)
+        # Every customer row = one registration
         agg["registrations"] += 1
 
-        # Customer is an FTD if they have a non-empty FTD date
-        if r["ftd_date"] and r["ftd_date"].strip():
+        # Customer is an FTD only when ftd_date is a real date (not N/A, blank, etc.)
+        if _is_real_date(r["ftd_date"]):
             agg["first_depositors"] += 1
 
         dep = r["deposits"]
@@ -212,6 +228,20 @@ def aggregate_customers(
         agg["deposits"]      += dep
         agg["bonuses"]       += r["bonuses"]
         agg["adj_general"]   += r["adj_general"]
+
+        brand_geos.add((r["brand_name"], r["country_name"]))
+        if len(ftd_samples) < 6:
+            ftd_samples.append(repr(r["ftd_date"]))
+
+    # Log summary so we can verify the file contents are what we expect
+    log.info("Distinct brands/geos in customer file: %s", sorted(brand_geos))
+    log.info("First 6 ftd_date values seen: %s", ftd_samples)
+    for (brand, geo), cnt in sorted(
+        {(b, g): sum(v["registrations"] for (a, b, g), v in result.items() if b == brand and g == geo)  # noqa
+         for brand, geo in brand_geos}.items()
+    ):
+        ftds = sum(v["first_depositors"] for (a, b, g), v in result.items() if b == brand and g == geo)
+        log.info("  %-12s / %-20s → %4d regs, %3d FTDs", brand, geo, cnt, ftds)
 
     return dict(result)
 
