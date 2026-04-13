@@ -260,7 +260,7 @@ def merge(
         brand_geos = aff_to_brandgeo.get(aff_id, [])
 
         if not brand_geos:
-            # No customer data → record clicks under Unknown brand/geo
+            # No customer data → record clicks/FTDs/regs under Unknown brand/geo
             records.append({
                 "report_date":          report_date,
                 "brand_name":           "Unknown",
@@ -276,9 +276,10 @@ def merge(
                 "unique_views":         aff_row.get("unique_views", 0),
                 "clicks":               aff_row.get("clicks", 0),
                 "unique_clicks":        aff_row.get("unique_clicks", 0),
-                "registrations":        0,
+                # FTDs/regs come from affiliate stats — no brand/geo to split on
+                "registrations":        aff_row.get("registrations", 0),
                 "depositing_customers": 0,
-                "first_depositors":     0,
+                "first_depositors":     aff_row.get("first_depositors", 0),
                 "deposits":             0.0,
                 "gross_revenue":        0.0,
                 "bonuses":              0.0,
@@ -314,15 +315,19 @@ def merge(
                 "affiliate_signup_date":aff_row.get("affiliate_signup_date"),
                 "campaign_name":        aff_row.get("campaign_name", ""),
                 "reward_plan":          aff_row.get("reward_plan", ""),
-                # Traffic: proportional
+                # Traffic: proportional split by brand/geo customer count
                 "views":         round(aff_row.get("views",         0) * weight),
                 "unique_views":  round(aff_row.get("unique_views",  0) * weight),
                 "clicks":        round(aff_row.get("clicks",        0) * weight),
                 "unique_clicks": round(aff_row.get("unique_clicks", 0) * weight),
-                # Customer counts: exact
-                "registrations":        agg["registrations"],
+                # FTDs/regs: proportional split from affiliate stats daily totals.
+                # The customer report contains historical signup/FTD dates (not
+                # today's activity), so we use affiliate stats as the source of
+                # truth and split by brand/geo customer count as the weight.
+                "registrations":        round(aff_row.get("registrations",   0) * weight),
+                "first_depositors":     round(aff_row.get("first_depositors", 0) * weight),
+                # Depositing customers: exact count from customer report
                 "depositing_customers": agg["depositing_customers"],
-                "first_depositors":     agg["first_depositors"],
                 # Revenue: exact
                 "deposits":      round(agg["deposits"],      4),
                 "gross_revenue": round(agg["gross_revenue"], 4),
