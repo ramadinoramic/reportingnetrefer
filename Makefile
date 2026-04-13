@@ -114,7 +114,7 @@ affiliate-dashboard:
 # Run the unique-key migration on an existing database
 # Usage: make migrate-key
 migrate-key:
-	docker compose exec db mysql \
+	docker compose exec -T db mysql \
 		-u $$MYSQL_USER -p$$MYSQL_PASSWORD $$MYSQL_DATABASE \
 		< sql/migrate_unique_key.sql
 
@@ -130,7 +130,7 @@ etl-dashboard:
 # Run the etl_runs schema migration (adds rows_parsed + warnings columns)
 # Usage: make migrate-etl
 migrate-etl:
-	docker compose exec db mysql \
+	docker compose exec -T db mysql \
 		-u $$MYSQL_USER -p$$MYSQL_PASSWORD $$MYSQL_DATABASE \
 		< sql/migrate_etl_runs.sql
 
@@ -191,7 +191,7 @@ check-date:
 # Create bahigo_wettigo_stats table (run once, or after make down+up)
 # Usage: make schema-bw
 schema-bw:
-	docker compose exec db mysql -u root -p$$MYSQL_ROOT_PASSWORD $$MYSQL_DATABASE \
+	docker compose exec -T db mysql -u root -p$$MYSQL_ROOT_PASSWORD $$MYSQL_DATABASE \
 	  < sql/schema_bahigo_wettigo.sql
 	@echo "bahigo_wettigo_stats table created/verified"
 
