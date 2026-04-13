@@ -74,6 +74,20 @@ log = logging.getLogger("bw_etl")
 # Customer report parser
 # ──────────────────────────────────────────────
 
+# Known Netrefer data-entry typos / alternate spellings → canonical brand name.
+# Add any new variants here if they appear in future exports.
+_BRAND_ALIASES: Dict[str, str] = {
+    "bahibi": "Bahigo",
+    "bahigo": "Bahigo",
+    "wettigo": "Wettigo",
+}
+
+
+def _normalize_brand(raw: str) -> str:
+    """Return the canonical brand name, or the original if not recognised."""
+    return _BRAND_ALIASES.get(raw.strip().lower(), raw.strip())
+
+
 def _clean_euro(value: str) -> float:
     """Convert '€ 28.85' or '€  1,234.56' or '-28.85' to float."""
     if not value:
@@ -137,7 +151,7 @@ def parse_customer_report(raw_text: str, col_map: Dict[str, str]) -> List[Dict]:
                 mapped[internal] = value
 
         affiliate_id = mapped.get("affiliate_id", "").strip()
-        brand_name   = mapped.get("brand_name",   "").strip()
+        brand_name   = _normalize_brand(mapped.get("brand_name", ""))
         country_name = mapped.get("country_name", "Unknown").strip()
 
         if not affiliate_id or not brand_name:
@@ -204,7 +218,6 @@ def aggregate_customers(
     })
 
     # Diagnostic: log distinct brands, geos, and a sample of ftd_date values
-    brand_geos: set = set()
     ftd_samples: list = []
 
     for r in rows:
@@ -229,19 +242,20 @@ def aggregate_customers(
         agg["bonuses"]       += r["bonuses"]
         agg["adj_general"]   += r["adj_general"]
 
-        brand_geos.add((r["brand_name"], r["country_name"]))
         if len(ftd_samples) < 6:
             ftd_samples.append(repr(r["ftd_date"]))
 
     # Log summary so we can verify the file contents are what we expect
-    log.info("Distinct brands/geos in customer file: %s", sorted(brand_geos))
     log.info("First 6 ftd_date values seen: %s", ftd_samples)
-    for (brand, geo), cnt in sorted(
-        {(b, g): sum(v["registrations"] for (a, b, g), v in result.items() if b == brand and g == geo)  # noqa
-         for brand, geo in brand_geos}.items()
-    ):
-        ftds = sum(v["first_depositors"] for (a, b, g), v in result.items() if b == brand and g == geo)
-        log.info("  %-12s / %-20s → %4d regs, %3d FTDs", brand, geo, cnt, ftds)
+    brand_geo_totals: dict = {}
+    for (aff_id, brand, geo), agg in result.items():
+        bg = (brand, geo)
+        if bg not in brand_geo_totals:
+            brand_geo_totals[bg] = {"regs": 0, "ftds": 0}
+        brand_geo_totals[bg]["regs"] += agg["registrations"]
+        brand_geo_totals[bg]["ftds"] += agg["first_depositors"]
+    for (brand, geo), totals in sorted(brand_geo_totals.items()):
+        log.info("  %-12s / %-20s → %4d regs, %3d FTDs", brand, geo, totals["regs"], totals["ftds"])
 
     return dict(result)
 
