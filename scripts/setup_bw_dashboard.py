@@ -23,6 +23,7 @@ Usage:
 
 import argparse
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -69,41 +70,23 @@ def find_database(mb, name_fragment):
     raise RuntimeError(f"No database matching '{name_fragment}'")
 
 
-def get_or_create_dashboard(mb, name, params):
-    """Return dashboard id, creating it if it doesn't already exist."""
-    all_dash = mb.get("/api/dashboard")
-    for d in all_dash:
-        if d.get("name") == name and not d.get("archived"):
-            dash_id = d["id"]
-            print(f"  Updating existing dashboard '{name}' (id={dash_id})")
-            mb.put(f"/api/dashboard/{dash_id}", json={"parameters": params, "dashcards": []})
-            return dash_id
-    print(f"  Creating new dashboard '{name}'")
-    dash = mb.post("/api/dashboard", json={"name": name, "parameters": params})
-    return dash["id"]
+def existing_cards(mb):
+    """Return {card_name: card_id} for all active and archived cards."""
+    active = mb.get("/api/card")
+    try:
+        archived = mb.get("/api/card?archived=true")
+    except Exception:
+        archived = []
+    return {c["name"]: c["id"] for c in (active + archived)}
 
 
-def make_card(mb, db_id, name, sql, display, viz_settings=None):
-    """Create a native SQL card and return its id."""
-    card = mb.post("/api/card", json={
-        "name":            name,
-        "display":         display,
-        "dataset_query": {
-            "type":     "native",
-            "database": db_id,
-            "native": {
-                "query":          sql,
-                "template-tags":  _extract_tags(sql),
-            },
-        },
-        "visualization_settings": viz_settings or {},
-    })
-    return card["id"]
+def existing_dashboards(mb):
+    """Return {dashboard_name: dashboard_id} for all non-archived dashboards."""
+    return {d["name"]: d["id"] for d in mb.get("/api/dashboard") if not d.get("archived")}
 
 
 def _extract_tags(sql: str) -> dict:
     """Build Metabase template-tag dicts for every {{var}} in sql."""
-    import re
     tags = {}
     for name in re.findall(r"\{\{(\w+)\}\}", sql):
         tags[name] = {
@@ -123,18 +106,31 @@ def _extract_tags(sql: str) -> dict:
     return tags
 
 
-def add_card_to_dashboard(mb, dash_id, card_id, col, row, size_x=8, size_y=6,
-                           param_mappings=None):
+def upsert_card(mb, db_id, name, sql, display, viz_settings, existing):
+    """Create or update a native SQL card; returns its id."""
     payload = {
-        "cardId":          card_id,
-        "col":             col,
-        "row":             row,
-        "size_x":          size_x,
-        "size_y":          size_y,
-        "parameter_mappings": param_mappings or [],
-        "visualization_settings": {},
+        "name":    name,
+        "display": display,
+        "dataset_query": {
+            "type":     "native",
+            "database": db_id,
+            "native": {
+                "query":         sql,
+                "template-tags": _extract_tags(sql),
+            },
+        },
+        "visualization_settings": viz_settings or {},
+        "archived": False,
     }
-    mb.post(f"/api/dashboard/{dash_id}/cards", json=payload)
+    if name in existing:
+        card_id = existing[name]
+        mb.put(f"/api/card/{card_id}", json=payload)
+        print(f"  [updated] {name} (id={card_id})")
+        return card_id
+    else:
+        card = mb.post("/api/card", json=payload)
+        print(f"  [created] {name} (id={card['id']})")
+        return card["id"]
 
 
 # ──────────────────────────────────────────────
@@ -233,124 +229,124 @@ def build_queries(brand: str) -> dict:
 # Dashboard builder
 # ──────────────────────────────────────────────
 
+# Dashboard-level filter parameters (fixed IDs so re-runs are stable)
+def _params(brand):
+    B = brand.lower()[:2]   # 'ba' or 'we'
+    return [
+        {"id": f"{B}-from-date",      "name": "From Date",  "slug": "from_date",      "type": "date/single"},
+        {"id": f"{B}-to-date",        "name": "To Date",    "slug": "to_date",        "type": "date/single"},
+        {"id": f"{B}-geo",            "name": "Geo",        "slug": "geo",            "type": "category"},
+        {"id": f"{B}-affiliate-name", "name": "Affiliate",  "slug": "affiliate_name", "type": "category"},
+    ]
+
+
+def _all_maps(param_ids, card_id):
+    from_id, to_id, geo_id, aff_id = param_ids
+    return [
+        {"parameter_id": from_id, "card_id": card_id, "target": ["variable", ["template-tag", "from_date"]]},
+        {"parameter_id": to_id,   "card_id": card_id, "target": ["variable", ["template-tag", "to_date"]]},
+        {"parameter_id": geo_id,  "card_id": card_id, "target": ["variable", ["template-tag", "geo"]]},
+        {"parameter_id": aff_id,  "card_id": card_id, "target": ["variable", ["template-tag", "affiliate_name"]]},
+    ]
+
+
+def build_dashcards(cards, param_ids):
+    """Return the dashcards list for PUT /api/dashboard/{id}."""
+    # (key, row, col, size_x, size_y)
+    layout = [
+        ("ftds",       0,  0,  4,  4),
+        ("regs",       0,  4,  4,  4),
+        ("clicks",     0,  8,  4,  4),
+        ("ngr",        0, 12,  4,  4),
+        ("commission", 0, 16,  4,  4),
+        ("daily",      4,  0, 20,  6),
+        ("ftds_geo",  10,  0, 10,  7),
+        ("ngr_geo",   10, 10, 10,  7),
+        ("top_aff",   17,  0, 20,  8),
+        ("scorecard", 25,  0, 20, 10),
+    ]
+
+    dashcards = []
+    for idx, (key, row, col, size_x, size_y) in enumerate(layout):
+        card_id = cards[key]
+        dashcards.append({
+            "id":                    -(idx + 1),   # negative = new placement
+            "card_id":                card_id,
+            "row":                    row,
+            "col":                    col,
+            "size_x":                 size_x,
+            "size_y":                 size_y,
+            "parameter_mappings":     _all_maps(param_ids, card_id),
+            "visualization_settings": {},
+        })
+    return dashcards
+
+
 def build_dashboard(mb, db_id, brand):
     dash_name = f"{brand} Performance Overview"
     print(f"\nBuilding dashboard: {dash_name}")
 
-    queries = build_queries(brand)
+    queries   = build_queries(brand)
+    params    = _params(brand)
+    param_ids = [p["id"] for p in params]   # [from_id, to_id, geo_id, aff_id]
 
-    # Dashboard-level filter parameters
-    params = [
-        {"id": "from_date",       "name": "From Date",       "slug": "from_date",       "type": "date/single"},
-        {"id": "to_date",         "name": "To Date",         "slug": "to_date",         "type": "date/single"},
-        {"id": "geo",             "name": "Geo",             "slug": "geo",             "type": "category"},
-        {"id": "affiliate_name",  "name": "Affiliate",       "slug": "affiliate_name",  "type": "category"},
-    ]
+    # ── Upsert cards ──────────────────────────────────────────────────────
+    print("  Upserting cards...")
+    existing = existing_cards(mb)
 
-    dash_id = get_or_create_dashboard(mb, dash_name, params)
-
-    # ── Create cards ──────────────────────────────────────────────────────
-    print("  Creating cards...")
-
-    num_viz = {
-        "number.style": "decimal",
-        "column_settings": {},
-    }
+    num_viz = {"number.style": "decimal", "column_settings": {}}
     num_money = {
-        "number.style": "currency",
-        "currency": "EUR",
+        "number.style":  "currency",
+        "currency":      "EUR",
         "currency_style": "symbol",
-    }
-    bar_viz = {
-        "graph.dimensions": ["geo"],
-        "graph.metrics":    ["ftds"],
     }
 
     cards = {
-        "ftds":       make_card(mb, db_id, f"{brand} — FTDs",         queries["ftds_scalar"],       "scalar", num_viz),
-        "regs":       make_card(mb, db_id, f"{brand} — Registrations", queries["regs_scalar"],       "scalar", num_viz),
-        "clicks":     make_card(mb, db_id, f"{brand} — Clicks",        queries["clicks_scalar"],      "scalar", num_viz),
-        "ngr":        make_card(mb, db_id, f"{brand} — NGR",           queries["ngr_scalar"],         "scalar", num_money),
-        "commission": make_card(mb, db_id, f"{brand} — Commission",    queries["commission_scalar"],  "scalar", num_money),
-        "daily":      make_card(mb, db_id, f"{brand} — Daily FTDs Trend", queries["daily_ftds"],      "line", {
+        "ftds":       upsert_card(mb, db_id, f"{brand} — FTDs",              queries["ftds_scalar"],      "scalar", num_viz,   existing),
+        "regs":       upsert_card(mb, db_id, f"{brand} — Registrations",     queries["regs_scalar"],      "scalar", num_viz,   existing),
+        "clicks":     upsert_card(mb, db_id, f"{brand} — Clicks",            queries["clicks_scalar"],    "scalar", num_viz,   existing),
+        "ngr":        upsert_card(mb, db_id, f"{brand} — NGR",               queries["ngr_scalar"],       "scalar", num_money, existing),
+        "commission": upsert_card(mb, db_id, f"{brand} — Commission",        queries["commission_scalar"],"scalar", num_money, existing),
+        "daily":      upsert_card(mb, db_id, f"{brand} — Daily FTDs Trend",  queries["daily_ftds"],       "line",   {
             "graph.dimensions": ["report_date"],
             "graph.metrics":    ["ftds"],
-        }),
-        "ftds_geo":   make_card(mb, db_id, f"{brand} — FTDs by Geo",  queries["ftds_by_geo"],        "row", {
+        }, existing),
+        "ftds_geo":   upsert_card(mb, db_id, f"{brand} — FTDs by Geo",      queries["ftds_by_geo"],      "row",    {
             "graph.dimensions": ["geo"],
             "graph.metrics":    ["ftds"],
-        }),
-        "ngr_geo":    make_card(mb, db_id, f"{brand} — NGR by Geo",   queries["ngr_by_geo"],         "row", {
+        }, existing),
+        "ngr_geo":    upsert_card(mb, db_id, f"{brand} — NGR by Geo",       queries["ngr_by_geo"],       "row",    {
             "graph.dimensions": ["geo"],
             "graph.metrics":    ["ngr"],
-        }),
-        "top_aff":    make_card(mb, db_id, f"{brand} — Top Affiliates by FTDs", queries["top_affiliates"], "row", {
+        }, existing),
+        "top_aff":    upsert_card(mb, db_id, f"{brand} — Top Affiliates by FTDs", queries["top_affiliates"], "row", {
             "graph.dimensions": ["affiliate_name"],
             "graph.metrics":    ["ftds"],
-        }),
-        "scorecard":  make_card(mb, db_id, f"{brand} — Full Scorecard", queries["scorecard"],         "table", {}),
+        }, existing),
+        "scorecard":  upsert_card(mb, db_id, f"{brand} — Full Scorecard",   queries["scorecard"],        "table",  {}, existing),
     }
 
-    print(f"  Cards created: {list(cards.keys())}")
+    print(f"  Cards ready: {list(cards.keys())}")
 
-    # ── Layout ────────────────────────────────────────────────────────────
-    # Helper: param_mapping for a date tag
-    def date_map(param_id, card_id, tag_name):
-        return [{
-            "parameter_id": param_id,
-            "card_id":      card_id,
-            "target":       ["variable", ["template-tag", tag_name]],
-        }]
+    # ── Create or update dashboard ────────────────────────────────────────
+    existing_dashes = existing_dashboards(mb)
+    if dash_name in existing_dashes:
+        dash_id = existing_dashes[dash_name]
+        print(f"  Updating existing dashboard '{dash_name}' (id={dash_id}) — URL preserved")
+        # Clear stale dashcards first
+        mb.put(f"/api/dashboard/{dash_id}", json={"parameters": params, "dashcards": []})
+    else:
+        print(f"  Creating new dashboard '{dash_name}'")
+        dash    = mb.post("/api/dashboard", json={"name": dash_name, "parameters": params})
+        dash_id = dash["id"]
 
-    def cat_map(param_id, card_id, tag_name):
-        return [{
-            "parameter_id": param_id,
-            "card_id":      card_id,
-            "target":       ["variable", ["template-tag", tag_name]],
-        }]
-
-    def all_maps(card_id):
-        return (
-            date_map("from_date",      card_id, "from_date") +
-            date_map("to_date",        card_id, "to_date") +
-            cat_map("geo",             card_id, "geo") +
-            cat_map("affiliate_name",  card_id, "affiliate_name")
-        )
-
-    # Row 0: KPI scalars (5 × width-4, height-4)
-    row = 0
-    for i, key in enumerate(["ftds", "regs", "clicks", "ngr", "commission"]):
-        add_card_to_dashboard(mb, dash_id, cards[key],
-                              col=i * 4, row=row, size_x=4, size_y=4,
-                              param_mappings=all_maps(cards[key]))
-
-    # Row 1: Daily trend (full width)
-    row = 4
-    add_card_to_dashboard(mb, dash_id, cards["daily"],
-                          col=0, row=row, size_x=20, size_y=6,
-                          param_mappings=all_maps(cards["daily"]))
-
-    # Row 2: FTDs by Geo | NGR by Geo (half each)
-    row = 10
-    add_card_to_dashboard(mb, dash_id, cards["ftds_geo"],
-                          col=0, row=row, size_x=10, size_y=7,
-                          param_mappings=all_maps(cards["ftds_geo"]))
-    add_card_to_dashboard(mb, dash_id, cards["ngr_geo"],
-                          col=10, row=row, size_x=10, size_y=7,
-                          param_mappings=all_maps(cards["ngr_geo"]))
-
-    # Row 3: Top affiliates (full width)
-    row = 17
-    add_card_to_dashboard(mb, dash_id, cards["top_aff"],
-                          col=0, row=row, size_x=20, size_y=8,
-                          param_mappings=all_maps(cards["top_aff"]))
-
-    # Row 4: Full scorecard table
-    row = 25
-    add_card_to_dashboard(mb, dash_id, cards["scorecard"],
-                          col=0, row=row, size_x=20, size_y=10,
-                          param_mappings=all_maps(cards["scorecard"]))
-
+    # ── Wire cards to dashboard in one PUT ───────────────────────────────
+    dashcards = build_dashcards(cards, param_ids)
+    mb.put(f"/api/dashboard/{dash_id}", json={
+        "parameters": params,
+        "dashcards":  dashcards,
+    })
+    print(f"  {len(dashcards)} cards wired.")
     print(f"  Dashboard ready: {mb.host}/dashboard/{dash_id}")
     return dash_id
 
