@@ -66,41 +66,77 @@ def find_database(mb, name_fragment):
     raise RuntimeError(f"No database matching '{name_fragment}'")
 
 
+def sync_database(mb, db_id):
+    """Trigger a full schema sync and wait for the table to appear."""
+    import time
+    print(f"  Triggering schema sync for database {db_id} …")
+    try:
+        mb.post(f"/api/database/{db_id}/sync_schema")
+    except Exception as e:
+        print(f"  (sync request: {e} — continuing anyway)")
+    # Give Metabase time to discover new tables/fields
+    for i in range(12):          # up to 60 s
+        time.sleep(5)
+        try:
+            meta = mb.get(f"/api/database/{db_id}/metadata")
+            for table in meta.get("tables", []):
+                if table["name"].lower() == "bahigo_wettigo_stats":
+                    print(f"  Table bahigo_wettigo_stats found after ~{(i+1)*5}s")
+                    return
+        except Exception:
+            pass
+    print("  Sync wait timed out — proceeding anyway")
+
+
 def find_field_id(mb, db_id, table_name, field_name):
     """Try multiple Metabase API endpoints to find a field's numeric ID."""
-    try:
-        fields = mb.get(f"/api/database/{db_id}/fields")
-        for f in fields:
-            if (f.get("table_name", "").lower() == table_name
-                    and f.get("name", "").lower() == field_name):
-                print(f"  {table_name}.{field_name} field id={f['id']}")
-                return f["id"]
-    except Exception:
-        pass
-    try:
-        meta = mb.get(f"/api/database/{db_id}/metadata")
-        for table in meta.get("tables", []):
-            if table["name"].lower() == table_name:
-                for field in table.get("fields", []):
-                    if field["name"].lower() == field_name:
-                        print(f"  {table_name}.{field_name} field id={field['id']}")
-                        return field["id"]
-    except Exception:
-        pass
-    try:
-        tables = mb.get("/api/table")
-        for t in tables:
-            if t["name"].lower() == table_name and t.get("db_id") == db_id:
-                tmeta = mb.get(f"/api/table/{t['id']}/query_metadata")
-                for field in tmeta.get("fields", []):
-                    if field["name"].lower() == field_name:
-                        print(f"  {table_name}.{field_name} field id={field['id']}")
-                        return field["id"]
-    except Exception:
-        pass
+    def _search():
+        try:
+            fields = mb.get(f"/api/database/{db_id}/fields")
+            for f in fields:
+                if (f.get("table_name", "").lower() == table_name
+                        and f.get("name", "").lower() == field_name):
+                    print(f"  {table_name}.{field_name} field id={f['id']}")
+                    return f["id"]
+        except Exception:
+            pass
+        try:
+            meta = mb.get(f"/api/database/{db_id}/metadata")
+            for table in meta.get("tables", []):
+                if table["name"].lower() == table_name:
+                    for field in table.get("fields", []):
+                        if field["name"].lower() == field_name:
+                            print(f"  {table_name}.{field_name} field id={field['id']}")
+                            return field["id"]
+        except Exception:
+            pass
+        try:
+            tables = mb.get("/api/table")
+            for t in tables:
+                if t["name"].lower() == table_name and t.get("db_id") == db_id:
+                    tmeta = mb.get(f"/api/table/{t['id']}/query_metadata")
+                    for field in tmeta.get("fields", []):
+                        if field["name"].lower() == field_name:
+                            print(f"  {table_name}.{field_name} field id={field['id']}")
+                            return field["id"]
+        except Exception:
+            pass
+        return None
+
+    result = _search()
+    if result is not None:
+        return result
+
+    # Table not yet known to Metabase — trigger a sync and retry once
+    print(f"  Field not found; triggering DB sync …")
+    sync_database(mb, db_id)
+    result = _search()
+    if result is not None:
+        return result
+
     raise RuntimeError(
-        f"Could not find field '{field_name}' in table '{table_name}'.\n"
-        "Run Admin → Databases → Sync database schema now, then retry."
+        f"Could not find field '{field_name}' in table '{table_name}' "
+        "even after syncing. Check that data has been loaded into the table."
     )
 
 
