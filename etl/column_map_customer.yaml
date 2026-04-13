@@ -1,0 +1,24 @@
+# Column mapping for the Netrefer Customer Report (netrefer_custom_YYYY-MM-DD.csv).
+# Maps CSV header → internal field name used by bahigo_wettigo_etl.py.
+
+column_map:
+  # Key join / grouping fields
+  "Customer ID":                    customer_id
+  "Affiliate ID":                   affiliate_id
+  "Brand ID":                       brand_id
+  "Brand Name":                     brand_name
+  "Country Name":                   country_name
+
+  # Dates used to determine registrations and FTDs for the report day
+  "Signup Date":                    signup_date
+  "First-Time Depositing Date":     ftd_date
+  "First-Time Depositing Amount":   ftd_amount
+
+  # Financial metrics (all EUR, format: "€ 0.00" or "€ 1,234.56")
+  "Gross Revenue":                  gross_revenue
+  "Net Revenue":                    net_revenue
+  "Deposits":                       deposits
+  "Turnover":                       turnover
+  "Bonuses":                        bonuses
+  "Adj (General)":                  adj_general
+  "Payouts":                        payouts

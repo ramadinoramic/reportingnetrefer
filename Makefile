@@ -1,4 +1,4 @@
-.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard channel-dashboard etl-dashboard trend-dashboard leaderboard-dashboard source-trend telegram-bot migrate-key migrate-etl audit-csv watch watch-once etl-docker diagnose reprocess
+.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard channel-dashboard etl-dashboard trend-dashboard leaderboard-dashboard source-trend telegram-bot migrate-key migrate-etl audit-csv watch watch-once etl-docker diagnose reprocess schema-bw load-bw bahigo-dashboard wettigo-dashboard
 
 # Load .env so make targets can use MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE etc.
 -include .env
@@ -185,6 +185,39 @@ check-date:
 	   FROM netrefer_stats \
 	   WHERE report_date = '$(DATE)' \
 	   GROUP BY report_date;"
+
+# ── Bahigo & Wettigo ─────────────────────────────────────────────────────────
+
+# Create bahigo_wettigo_stats table (run once, or after make down+up)
+# Usage: make schema-bw
+schema-bw:
+	docker compose exec db mysql -u root -p$$MYSQL_ROOT_PASSWORD $$MYSQL_DATABASE \
+	  < sql/schema_bahigo_wettigo.sql
+	@echo "bahigo_wettigo_stats table created/verified"
+
+# Load a Bahigo+Wettigo pair manually
+# Usage: make load-bw STATS=drop/bahigo_wettigo/netrefer_2026-04-12.csv \
+#                     CUSTOMERS=drop/bahigo_wettigo/netrefer_custom_2026-04-12.csv
+load-bw:
+	$(PYTHON) etl/bahigo_wettigo_etl.py --stats $(STATS) --customers $(CUSTOMERS)
+
+# Create / update the Bahigo Performance Overview dashboard
+# Usage: make bahigo-dashboard MB_USER=admin@example.com MB_PASS=secret
+bahigo-dashboard:
+	$(PYTHON) scripts/setup_bw_dashboard.py --brand Bahigo \
+		--host $(or $(HOST),http://localhost:3001) \
+		--user $(MB_USER) \
+		--password $(MB_PASS) \
+		$(if $(DB_NAME),--db-name $(DB_NAME),)
+
+# Create / update the Wettigo Performance Overview dashboard
+# Usage: make wettigo-dashboard MB_USER=admin@example.com MB_PASS=secret
+wettigo-dashboard:
+	$(PYTHON) scripts/setup_bw_dashboard.py --brand Wettigo \
+		--host $(or $(HOST),http://localhost:3001) \
+		--user $(MB_USER) \
+		--password $(MB_PASS) \
+		$(if $(DB_NAME),--db-name $(DB_NAME),)
 
 # Force-reprocess a file that was already loaded (clears etl_runs record so the watcher picks it up again)
 # Usage: make reprocess FILE=netrefer_2026-04-08.csv
