@@ -395,6 +395,97 @@ def build_queries(brand: str) -> dict:
             GROUP BY report_date, affiliate_name, geo
             ORDER BY report_date DESC, ftds DESC
         """,
+
+        # ── Cost / unit economics (requires traffic_costs table populated via make sync-costs) ──
+
+        "cost_total": f"""
+            SELECT ROUND(SUM(tc.cost_eur), 0) AS total_cost
+            FROM bahigo_wettigo_stats s
+            LEFT JOIN traffic_costs tc
+                ON  tc.report_date  = s.report_date
+                AND tc.affiliate_id = s.affiliate_id
+                AND (tc.brand = s.brand_name OR tc.brand = '')
+            WHERE s.brand_name = '{B}'
+              [[AND {{{{geo}}}}]]
+              [[AND {{{{affiliate_name}}}}]]
+              [[AND s.report_date >= {{{{from_date}}}}]]
+              [[AND s.report_date <= {{{{to_date}}}}]]
+        """,
+        "cpa_scalar": f"""
+            SELECT ROUND(SUM(tc.cost_eur) / NULLIF(SUM(s.first_depositors), 0), 2) AS cpa
+            FROM bahigo_wettigo_stats s
+            LEFT JOIN traffic_costs tc
+                ON  tc.report_date  = s.report_date
+                AND tc.affiliate_id = s.affiliate_id
+                AND (tc.brand = s.brand_name OR tc.brand = '')
+            WHERE s.brand_name = '{B}'
+              [[AND {{{{geo}}}}]]
+              [[AND {{{{affiliate_name}}}}]]
+              [[AND s.report_date >= {{{{from_date}}}}]]
+              [[AND s.report_date <= {{{{to_date}}}}]]
+        """,
+        "cpl_scalar": f"""
+            SELECT ROUND(SUM(tc.cost_eur) / NULLIF(SUM(s.registrations), 0), 2) AS cpl
+            FROM bahigo_wettigo_stats s
+            LEFT JOIN traffic_costs tc
+                ON  tc.report_date  = s.report_date
+                AND tc.affiliate_id = s.affiliate_id
+                AND (tc.brand = s.brand_name OR tc.brand = '')
+            WHERE s.brand_name = '{B}'
+              [[AND {{{{geo}}}}]]
+              [[AND {{{{affiliate_name}}}}]]
+              [[AND s.report_date >= {{{{from_date}}}}]]
+              [[AND s.report_date <= {{{{to_date}}}}]]
+        """,
+        "cpm_scalar": f"""
+            SELECT ROUND(SUM(tc.cost_eur) / NULLIF(SUM(s.views), 0) * 1000, 2) AS cpm
+            FROM bahigo_wettigo_stats s
+            LEFT JOIN traffic_costs tc
+                ON  tc.report_date  = s.report_date
+                AND tc.affiliate_id = s.affiliate_id
+                AND (tc.brand = s.brand_name OR tc.brand = '')
+            WHERE s.brand_name = '{B}'
+              [[AND {{{{geo}}}}]]
+              [[AND {{{{affiliate_name}}}}]]
+              [[AND s.report_date >= {{{{from_date}}}}]]
+              [[AND s.report_date <= {{{{to_date}}}}]]
+        """,
+        "roi_scalar": f"""
+            SELECT ROUND(SUM(s.net_revenue) / NULLIF(SUM(tc.cost_eur), 0), 2) AS roi
+            FROM bahigo_wettigo_stats s
+            LEFT JOIN traffic_costs tc
+                ON  tc.report_date  = s.report_date
+                AND tc.affiliate_id = s.affiliate_id
+                AND (tc.brand = s.brand_name OR tc.brand = '')
+            WHERE s.brand_name = '{B}'
+              [[AND {{{{geo}}}}]]
+              [[AND {{{{affiliate_name}}}}]]
+              [[AND s.report_date >= {{{{from_date}}}}]]
+              [[AND s.report_date <= {{{{to_date}}}}]]
+        """,
+        "cost_by_affiliate": f"""
+            SELECT s.affiliate_name,
+                   ROUND(SUM(tc.cost_eur), 0)                                          AS cost,
+                   SUM(s.first_depositors)                                             AS ftds,
+                   SUM(s.registrations)                                                AS regs,
+                   ROUND(SUM(s.net_revenue), 0)                                        AS ngr,
+                   ROUND(SUM(tc.cost_eur) / NULLIF(SUM(s.first_depositors), 0), 2)    AS cpa,
+                   ROUND(SUM(tc.cost_eur) / NULLIF(SUM(s.registrations), 0), 2)       AS cpl,
+                   ROUND((SUM(s.net_revenue) - SUM(tc.cost_eur)), 0)                  AS profit,
+                   ROUND(SUM(s.net_revenue) / NULLIF(SUM(tc.cost_eur), 0), 2)         AS roi
+            FROM bahigo_wettigo_stats s
+            LEFT JOIN traffic_costs tc
+                ON  tc.report_date  = s.report_date
+                AND tc.affiliate_id = s.affiliate_id
+                AND (tc.brand = s.brand_name OR tc.brand = '')
+            WHERE s.brand_name = '{B}'
+              [[AND {{{{geo}}}}]]
+              [[AND {{{{affiliate_name}}}}]]
+              [[AND s.report_date >= {{{{from_date}}}}]]
+              [[AND s.report_date <= {{{{to_date}}}}]]
+            GROUP BY s.affiliate_name
+            ORDER BY cost DESC
+        """,
     }
 
 
@@ -449,6 +540,14 @@ def build_dashcards(cards, param_ids):
         ("scorecard",        38,  0, 20, 10),
         # Row 5: Daily scorecard (one row per day — filter to a single date for day view)
         ("scorecard_daily",  48,  0, 20, 10),
+        # Row 6: Cost KPI scalars (requires traffic_costs populated via make sync-costs)
+        ("cost_total",       58,  0,  5,  4),
+        ("cpa",              58,  5,  4,  4),
+        ("cpl",              58,  9,  4,  4),
+        ("cpm",              58, 13,  4,  4),
+        ("roi",              58, 17,  3,  4),
+        # Row 7: Cost vs Revenue per affiliate table
+        ("cost_by_affiliate",62,  0, 20, 10),
     ]
     dashcards = []
     for idx, (key, row, col, size_x, size_y) in enumerate(layout):
@@ -510,8 +609,15 @@ def build_dashboard(mb, db_id, brand):
         "top_aff":          upsert_card(mb, db_id, f"{brand} — Top Affiliates by FTDs",     queries["top_affiliates"],        "row",    aff_bar("ftds"),  existing, tags=t(queries["top_affiliates"])),
         "top_aff_signup":   upsert_card(mb, db_id, f"{brand} — Top Affiliates by Signups",  queries["top_affiliates_signup"], "row",    aff_bar("regs"),  existing, tags=t(queries["top_affiliates_signup"])),
         "top_aff_clicks":   upsert_card(mb, db_id, f"{brand} — Top Affiliates by Clicks",   queries["top_affiliates_clicks"], "row",    aff_bar("clicks"),existing, tags=t(queries["top_affiliates_clicks"])),
-        "scorecard":        upsert_card(mb, db_id, f"{brand} — Full Scorecard",             queries["scorecard"],             "table",  {},              existing, tags=t(queries["scorecard"])),
-        "scorecard_daily":  upsert_card(mb, db_id, f"{brand} — Daily Scorecard",            queries["scorecard_daily"],       "table",  {},              existing, tags=t(queries["scorecard_daily"])),
+        "scorecard":         upsert_card(mb, db_id, f"{brand} — Full Scorecard",              queries["scorecard"],             "table",  {},        existing, tags=t(queries["scorecard"])),
+        "scorecard_daily":   upsert_card(mb, db_id, f"{brand} — Daily Scorecard",             queries["scorecard_daily"],       "table",  {},        existing, tags=t(queries["scorecard_daily"])),
+        # ── Cost cards (LEFT JOIN traffic_costs — null until make sync-costs is run) ──
+        "cost_total":        upsert_card(mb, db_id, f"{brand} — Total Cost",                  queries["cost_total"],            "scalar", num_money, existing, tags=t(queries["cost_total"])),
+        "cpa":               upsert_card(mb, db_id, f"{brand} — CPA",                         queries["cpa_scalar"],            "scalar", num_money, existing, tags=t(queries["cpa_scalar"])),
+        "cpl":               upsert_card(mb, db_id, f"{brand} — CPL",                         queries["cpl_scalar"],            "scalar", num_money, existing, tags=t(queries["cpl_scalar"])),
+        "cpm":               upsert_card(mb, db_id, f"{brand} — CPM",                         queries["cpm_scalar"],            "scalar", num_money, existing, tags=t(queries["cpm_scalar"])),
+        "roi":               upsert_card(mb, db_id, f"{brand} — ROI",                         queries["roi_scalar"],            "scalar", num_viz,   existing, tags=t(queries["roi_scalar"])),
+        "cost_by_affiliate": upsert_card(mb, db_id, f"{brand} — Cost vs Revenue by Affiliate",queries["cost_by_affiliate"],     "table",  {},        existing, tags=t(queries["cost_by_affiliate"])),
     }
 
     print(f"  Cards ready: {list(cards.keys())}")

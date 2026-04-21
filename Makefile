@@ -1,4 +1,4 @@
-.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard channel-dashboard etl-dashboard trend-dashboard leaderboard-dashboard source-trend telegram-bot migrate-key migrate-etl audit-csv watch watch-once etl-docker diagnose reprocess schema-bw load-bw bahigo-dashboard wettigo-dashboard
+.PHONY: setup up down logs db-shell load load-dir board-report board-dashboard affiliate-dashboard channel-dashboard etl-dashboard trend-dashboard leaderboard-dashboard source-trend telegram-bot migrate-key migrate-etl audit-csv watch watch-once etl-docker diagnose reprocess schema-bw load-bw bahigo-dashboard wettigo-dashboard schema-costs sync-costs
 
 # Load .env so make targets can use MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE etc.
 -include .env
@@ -220,6 +220,32 @@ wettigo-dashboard:
 		--user $(MB_USER) \
 		--password $(MB_PASS) \
 		$(if $(DB_NAME),--db-name $(DB_NAME),)
+
+# ── Cost Tracking ────────────────────────────────────────────────────────────
+
+# Create affiliate_deals + traffic_costs tables (run once)
+# Usage: make schema-costs
+schema-costs:
+	docker compose exec -T db mysql -u root \
+	  -p$(or $(MYSQL_ROOT_PASSWORD),rootpassword) \
+	  $(or $(MYSQL_DATABASE),netrefer_reporting) \
+	  < sql/schema_costs.sql
+	@echo "affiliate_deals + traffic_costs tables created/verified"
+
+# Sync affiliate costs from Google Sheets → MySQL
+# Reads deal terms + manual costs from the sheet, then calculates daily
+# CPA/RevShare/Flat costs from actual performance data in the DB.
+# Usage:
+#   make sync-costs                        ← last 30 days
+#   make sync-costs DAYS=7                 ← last 7 days
+#   make sync-costs FROM=2026-04-01 TO=2026-04-15
+#   make sync-costs SKIP_SHEETS=1          ← recalculate from DB only, no Sheet sync
+sync-costs:
+	$(PYTHON) etl/sync_costs.py \
+	  $(if $(DAYS),--days $(DAYS),) \
+	  $(if $(FROM),--from $(FROM),) \
+	  $(if $(TO),--to $(TO),) \
+	  $(if $(SKIP_SHEETS),--skip-sheets,)
 
 # Force-reprocess a file that was already loaded (clears etl_runs record so the watcher picks it up again)
 # Usage: make reprocess FILE=netrefer_2026-04-08.csv
